@@ -15,6 +15,6 @@ repos:
         name: mypy
         entry: mypy
         language: system
-        args: [--show-traceback]
+        args: [--show-traceback, --no-sqlite-cache]
         types: [python]
         files: ^(src|tests)/.+\.py$
