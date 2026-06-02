@@ -18,7 +18,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from .math_utils import r, r6, snap, wls2, wls2_origin_quad, BUCKET_MIN
+from .math_utils import r, r6, snap, wls2, wls2_origin_quad
 
 _LOGGER = logging.getLogger(__name__)
 
