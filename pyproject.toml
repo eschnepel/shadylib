@@ -20,6 +20,15 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+[dependency-groups]
+dev = [
+  "pre-commit",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-cov",
+  "ruff",
+]
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
 
