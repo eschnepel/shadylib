@@ -93,17 +93,21 @@ def apply_corrections(
 
 
 def _predict_string(
-    raw: dict[str, float],
+    raw: dict[str | datetime, float],
     models: BucketModels,
 ) -> dict[str, float]:
     """Apply bucket models to a single string for all raw slots."""
-    result: dict[str, float] = {}
+    result: dict[datetime, float] = {}
 
     for iso_ts, raw_wh in raw.items():
-        try:
-            dt = datetime.fromisoformat(iso_ts)
-        except ValueError:
-            continue
+        if isinstance(iso_ts, datetime):
+            dt = iso_ts
+            iso_ts = dt.isoformat()
+        else:
+            try:
+                dt = datetime.fromisoformat(iso_ts)
+            except ValueError:
+                continue
 
         if dt.minute == 0:
             # Hourly slot → expand into 12 five-minute sub-slots

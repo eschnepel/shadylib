@@ -469,16 +469,14 @@ class TestRegressionNightUnknown:
             scale = 0.8 + 0.4 * d / 59
             # Only daytime training data
             for mm in range(0, 60, BUCKET_MIN):
-                ts = (
-                    datetime(2025, 1, 1, 10, mm, tzinfo=UTC) + timedelta(days=d)
-                ).isoformat()
+                ts = datetime(2025, 1, 1, 10, mm, tzinfo=UTC) + timedelta(days=d)
                 fc_rows.append({"start": ts, "mean": 400.0 * scale})
                 pv_rows.append({"start": ts, "mean": 200.0 * scale})
 
         # Night slot in raw forecast
         raw = {
-            "2025-06-15T02:00:00+00:00": 0.0,  # night, raw = 0
-            "2025-06-15T10:00:00+00:00": 400.0,  # daytime
+            datetime(2025, 6, 15, 2, tzinfo=UTC): 0.0,  # night, raw = 0
+            datetime(2025, 6, 15, 10, tzinfo=UTC): 400.0,  # daytime
         }
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
