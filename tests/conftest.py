@@ -1,6 +1,8 @@
 """Minimal conftest for shadylib tests – shadylib is a pure Python package,
 no HA stubs needed. Just ensure the package is importable."""
-import sys, pathlib
+
+import sys
+import pathlib
 
 # When running from the repo root, shadylib is installed or on the path already.
 # When running from the shadylib/ directory directly, add src/ to sys.path.
