@@ -8,12 +8,16 @@ version = "1.0.0"
 description = "Solar forecast correction library – HA-independent core for the Shady integration"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "Apache 2.0" }
 keywords = ["solar", "forecast", "home-assistant", "regression"]
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Topic :: Home Automation",
+  "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
 [project.optional-dependencies]
