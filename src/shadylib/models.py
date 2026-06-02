@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Any
 
 from .math_utils import r, r6, snap, wls2, wls2_origin_quad
 
@@ -38,15 +39,16 @@ ALGORITHM_LINEAR = "linear"
 ALGORITHM_QUADRATIC = "quadratic"
 
 BucketKey = tuple[int, int]
-BucketModels = dict[BucketKey, tuple]
-
+BucketValue = tuple[float, ...]
+BucketModels = dict[BucketKey, BucketValue]
+InputHistory = list[dict[str, Any]]
 
 # ---------------------------------------------------------------------------
 # Prediction
 # ---------------------------------------------------------------------------
 
 
-def predict(model: tuple, x: float) -> float:
+def predict(model: BucketValue, x: float) -> float:
     """Apply a model tuple to raw forecast value x."""
     if len(model) == 1:
         return model[0] * x
@@ -63,8 +65,8 @@ def predict(model: tuple, x: float) -> float:
 
 
 def build_bucket_models(
-    fc_rows: list[dict],
-    pv_rows: list[dict],
+    fc_rows: InputHistory,
+    pv_rows: InputHistory,
     algorithm: str,
 ) -> BucketModels:
     """Build one WLS model per (hour, 5-min-bucket) from recorder statistics.
@@ -136,7 +138,9 @@ def build_bucket_models(
 # ---------------------------------------------------------------------------
 
 
-def _fit_factor(xs: list[float], ys: list[float], ws: list[float]) -> tuple | None:
+def _fit_factor(
+    xs: list[float], ys: list[float], ws: list[float]
+) -> BucketValue | None:
     """Per-bucket weighted mean ratio: factor = avg_w(pv) / avg_w(fc)."""
     sw = sum(ws)
     if sw == 0:
@@ -148,7 +152,9 @@ def _fit_factor(xs: list[float], ys: list[float], ws: list[float]) -> tuple | No
     return (r6(mu_y / mu_x),)
 
 
-def _fit_linear(xs: list[float], ys: list[float], ws: list[float]) -> tuple | None:
+def _fit_linear(
+    xs: list[float], ys: list[float], ws: list[float]
+) -> BucketValue | None:
     """WLS linear: pv ~ slope*fc + intercept."""
     result = wls2(xs, ys, ws)
     if result is None:
@@ -157,7 +163,9 @@ def _fit_linear(xs: list[float], ys: list[float], ws: list[float]) -> tuple | No
     return (r6(slope), r(intercept))
 
 
-def _fit_quadratic(xs: list[float], ys: list[float], ws: list[float]) -> tuple | None:
+def _fit_quadratic(
+    xs: list[float], ys: list[float], ws: list[float]
+) -> BucketValue | None:
     """WLS quadratic through origin: pv ~ a*fc² + b*fc  (no free intercept).
 
     Returns (a, b, 0.0) so predict() uses the standard quadratic path with c=0.

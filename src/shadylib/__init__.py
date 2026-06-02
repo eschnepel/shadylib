@@ -29,7 +29,9 @@ from .math_utils import (
 )
 from .models import (
     BucketKey,
+    BucketValue,
     BucketModels,
+    InputHistory,
     build_bucket_models,
     predict,
     PV_MIN_W,
@@ -49,7 +51,9 @@ __all__ = [
     "PRECISION",
     # models
     "BucketKey",
+    "BucketValue",
     "BucketModels",
+    "InputHistory",
     "build_bucket_models",
     "predict",
     "PV_MIN_W",

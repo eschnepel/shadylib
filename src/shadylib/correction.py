@@ -22,15 +22,22 @@ import logging
 from datetime import datetime
 
 from .math_utils import r, snap, BUCKET_MIN
-from .models import build_bucket_models, predict, BucketKey, BucketModels
+from .models import (
+    build_bucket_models,
+    predict,
+    BucketKey,
+    BucketValue,
+    BucketModels,
+    InputHistory,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def apply_corrections(
     raw: dict[str, float],
-    fc_rows: list[dict],
-    pv_sensors_rows: dict[str, list[dict]],
+    fc_rows: InputHistory,
+    pv_sensors_rows: dict[str, InputHistory],
     algorithm: str,
 ) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
     """Correct a raw forecast using per-string per-bucket models.
@@ -118,14 +125,14 @@ def _predict_string(
 
 def _nearest_model(
     models: BucketModels, hour: int, snapped_minute: int
-) -> tuple | None:
+) -> BucketValue | None:
     """Return the model for (hour, snapped_minute) or the nearest bucket
     within the same hour if an exact match doesn't exist."""
     exact = models.get((hour, snapped_minute))
     if exact is not None:
         return exact
 
-    best_model: tuple | None = None
+    best_model: BucketValue | None = None
     best_dist = 60
     for (mh, mm), model in models.items():
         if mh == hour:
