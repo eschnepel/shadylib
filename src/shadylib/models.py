@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from .math_utils import r, r6, snap, wls2, wls2_origin_quad
 
@@ -59,6 +59,13 @@ def predict(model: BucketValue, x: float) -> float:
     return a * x * x + b * x + c
 
 
+def asDateTime(iso_ts: str | datetime) -> datetime:
+    if isinstance(iso_ts, datetime):
+        return iso_ts
+    else:
+        return datetime.fromisoformat(iso_ts)
+
+
 # ---------------------------------------------------------------------------
 # Model builder
 # ---------------------------------------------------------------------------
@@ -85,9 +92,13 @@ def build_bucket_models(
 
     Returns a dict of {(hour, minute): model_tuple}.
     """
-    fc_map: dict[datetime, float] = {r["start"]: r["mean"] for r in fc_rows}
+    fc_map: dict[datetime, float] = {
+        asDateTime(r["start"]): cast(float, r["mean"]) for r in fc_rows
+    }
     pv_map: dict[datetime, float] = {
-        r["start"]: r["mean"] for r in pv_rows if r["mean"] >= PV_MIN_W
+        asDateTime(r["start"]): cast(float, r["mean"])
+        for r in pv_rows
+        if r["mean"] >= PV_MIN_W
     }
 
     common = sorted(set(fc_map) & set(pv_map))
@@ -99,7 +110,7 @@ def build_bucket_models(
 
     for dt in common:
         bk = (dt.hour, snap(dt.minute))
-        buckets[bk].append((fc_map[dt], pv_map[dt], _W_SELF))
+        buckets[bk].append((fc_map.get(dt, 0.0), pv_map.get(dt, 0.0), _W_SELF))
 
         for delta_min, weight in (
             (-10, _W_FAR),
@@ -110,7 +121,9 @@ def build_bucket_models(
             nb = dt + timedelta(minutes=delta_min)
             if nb in fc_map and nb in pv_map:
                 nb_bk = (nb.hour, snap(nb.minute))
-                buckets[nb_bk].append((fc_map[nb], pv_map[nb], weight))
+                buckets[nb_bk].append(
+                    (fc_map.get(nb, 0.0), pv_map.get(nb, 0.0), weight)
+                )
 
     models: BucketModels = {}
     for bk, obs in buckets.items():
