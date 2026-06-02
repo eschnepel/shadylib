@@ -11,6 +11,7 @@ Model tuple encoding (identified by length in predict):
   LINEAR     : (slope, intercept)  – 2-tuple
   QUADRATIC  : (a, b, 0.0)         – 3-tuple  (c always 0, through-origin)
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,9 +23,9 @@ from .math_utils import r, r6, snap, wls2, wls2_origin_quad, BUCKET_MIN
 _LOGGER = logging.getLogger(__name__)
 
 # Neighbour smoothing weights
-_W_SELF = 1.0   # the observation itself
-_W_NEAR = 0.8   # ±5 min neighbour
-_W_FAR  = 0.3   # ±10 min neighbour
+_W_SELF = 1.0  # the observation itself
+_W_NEAR = 0.8  # ±5 min neighbour
+_W_FAR = 0.3  # ±10 min neighbour
 
 # Minimum PV value (W) included in training data.
 # Readings below this threshold indicate curtailment (e.g. battery full)
@@ -32,17 +33,18 @@ _W_FAR  = 0.3   # ±10 min neighbour
 PV_MIN_W = 5.0
 
 # Algorithm name constants
-ALGORITHM_FACTOR    = "factor"
-ALGORITHM_LINEAR    = "linear"
+ALGORITHM_FACTOR = "factor"
+ALGORITHM_LINEAR = "linear"
 ALGORITHM_QUADRATIC = "quadratic"
 
-BucketKey    = tuple[int, int]
+BucketKey = tuple[int, int]
 BucketModels = dict[BucketKey, tuple]
 
 
 # ---------------------------------------------------------------------------
 # Prediction
 # ---------------------------------------------------------------------------
+
 
 def predict(model: tuple, x: float) -> float:
     """Apply a model tuple to raw forecast value x."""
@@ -58,6 +60,7 @@ def predict(model: tuple, x: float) -> float:
 # ---------------------------------------------------------------------------
 # Model builder
 # ---------------------------------------------------------------------------
+
 
 def build_bucket_models(
     fc_rows: list[dict],
@@ -97,7 +100,10 @@ def build_bucket_models(
         buckets[bk].append((fc_map[dt], pv_map[dt], _W_SELF))
 
         for delta_min, weight in (
-            (-10, _W_FAR), (-5, _W_NEAR), (+5, _W_NEAR), (+10, _W_FAR)
+            (-10, _W_FAR),
+            (-5, _W_NEAR),
+            (+5, _W_NEAR),
+            (+10, _W_FAR),
         ):
             nb = dt + timedelta(minutes=delta_min)
             if nb in fc_map and nb in pv_map:
@@ -129,9 +135,10 @@ def build_bucket_models(
 # Fitters
 # ---------------------------------------------------------------------------
 
+
 def _fit_factor(xs: list[float], ys: list[float], ws: list[float]) -> tuple | None:
     """Per-bucket weighted mean ratio: factor = avg_w(pv) / avg_w(fc)."""
-    sw   = sum(ws)
+    sw = sum(ws)
     if sw == 0:
         return None
     mu_x = sum(w * x for w, x in zip(ws, xs)) / sw

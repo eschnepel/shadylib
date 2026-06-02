@@ -15,6 +15,7 @@ Sub-hourly provider semantics:
     Slots with minute≠0 are matched to their exact bucket (or nearest
     within the same hour if no exact match exists).
 """
+
 from __future__ import annotations
 
 import logging
@@ -48,8 +49,8 @@ def apply_corrections(
 
     If all string models fail, returns (dict(raw), {}).
     """
-    combined        : dict[str, float]              = {}
-    string_forecasts: dict[str, dict[str, float]]   = {}
+    combined: dict[str, float] = {}
+    string_forecasts: dict[str, dict[str, float]] = {}
 
     for pv_sensor, pv_rows in pv_sensors_rows.items():
         models = build_bucket_models(fc_rows, pv_rows, algorithm)
@@ -57,13 +58,18 @@ def apply_corrections(
         if not models:
             _LOGGER.warning(
                 "No bucket models for %s (algorithm=%s, fc_rows=%d, pv_rows=%d)",
-                pv_sensor, algorithm, len(fc_rows), len(pv_rows),
+                pv_sensor,
+                algorithm,
+                len(fc_rows),
+                len(pv_rows),
             )
             continue
 
         _LOGGER.info(
             "Bucket models for %s: algorithm=%s  %d buckets fitted",
-            pv_sensor, algorithm, len(models),
+            pv_sensor,
+            algorithm,
+            len(models),
         )
 
         string_slots = _predict_string(raw, models)
@@ -98,13 +104,13 @@ def _predict_string(
                 sub_ts = dt.replace(minute=mm, second=0, microsecond=0).isoformat()
                 bk: BucketKey = (dt.hour, mm)
                 model = models.get(bk)
-                val   = r(max(0.0, predict(model, raw_wh))) if model else 0.0
+                val = r(max(0.0, predict(model, raw_wh))) if model else 0.0
                 result[sub_ts] = r(result.get(sub_ts, 0.0) + val)
         else:
             # Sub-hourly slot → exact or nearest bucket within same hour
-            bk    = (dt.hour, snap(dt.minute))
+            bk = (dt.hour, snap(dt.minute))
             model = _nearest_model(models, dt.hour, snap(dt.minute))
-            val   = r(max(0.0, predict(model, raw_wh))) if model else 0.0
+            val = r(max(0.0, predict(model, raw_wh))) if model else 0.0
             result[iso_ts] = val
 
     return result

@@ -7,12 +7,13 @@ Contains:
   - Hourly aggregation (aggregate_to_hours)
   - WLS solvers (wls2, wls2_origin_quad)
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-PRECISION  = 2   # decimal places for all Wh output values
-BUCKET_MIN = 5   # minutes per bucket
+PRECISION = 2  # decimal places for all Wh output values
+BUCKET_MIN = 5  # minutes per bucket
 
 _UTC = timezone.utc
 
@@ -20,6 +21,7 @@ _UTC = timezone.utc
 # ---------------------------------------------------------------------------
 # Precision
 # ---------------------------------------------------------------------------
+
 
 def r(v: float) -> float:
     """Round to standard output precision (2 decimal places)."""
@@ -34,6 +36,7 @@ def r6(v: float) -> float:
 # ---------------------------------------------------------------------------
 # Datetime helpers
 # ---------------------------------------------------------------------------
+
 
 def parse_dt(iso_str: str) -> datetime:
     """Parse an ISO-8601 string to datetime. Returns datetime.min on failure."""
@@ -57,7 +60,7 @@ def aggregate_to_hours(slots: dict[str, float]) -> dict[str, float]:
     hourly: dict[str, float] = {}
     for ts, wh in slots.items():
         try:
-            dt  = datetime.fromisoformat(ts)
+            dt = datetime.fromisoformat(ts)
             key = dt.replace(minute=0, second=0, microsecond=0).isoformat()
         except ValueError:
             continue
@@ -69,6 +72,7 @@ def aggregate_to_hours(slots: dict[str, float]) -> dict[str, float]:
 # WLS solvers
 # ---------------------------------------------------------------------------
 
+
 def wls2(
     xs: list[float], ys: list[float], ws: list[float]
 ) -> tuple[float, float] | None:
@@ -77,17 +81,17 @@ def wls2(
     Returns (slope, intercept) or None if the system is degenerate
     (e.g. zero total weight, all-same x values).
     """
-    sw   = sum(ws)
+    sw = sum(ws)
     if sw == 0:
         return None
-    swx  = sum(w * x     for w, x    in zip(ws, xs))
-    swy  = sum(w * y     for w, y    in zip(ws, ys))
-    swxx = sum(w * x * x for w, x    in zip(ws, xs))
+    swx = sum(w * x for w, x in zip(ws, xs))
+    swy = sum(w * y for w, y in zip(ws, ys))
+    swxx = sum(w * x * x for w, x in zip(ws, xs))
     swxy = sum(w * x * y for w, x, y in zip(ws, xs, ys))
-    denom = sw * swxx - swx ** 2
+    denom = sw * swxx - swx**2
     if abs(denom) < 1e-12:
         return None
-    slope     = (sw * swxy - swx * swy) / denom
+    slope = (sw * swxy - swx * swy) / denom
     intercept = (swy - slope * swx) / sw
     return slope, intercept
 
@@ -107,16 +111,16 @@ def wls2_origin_quad(
 
     Returns (a, b) or None if the system is degenerate.
     """
-    swx2  = sum(w * x**2     for w, x    in zip(ws, xs))
-    swx3  = sum(w * x**3     for w, x    in zip(ws, xs))
-    swx4  = sum(w * x**4     for w, x    in zip(ws, xs))
-    swxy  = sum(w * x * y    for w, x, y in zip(ws, xs, ys))
+    swx2 = sum(w * x**2 for w, x in zip(ws, xs))
+    swx3 = sum(w * x**3 for w, x in zip(ws, xs))
+    swx4 = sum(w * x**4 for w, x in zip(ws, xs))
+    swxy = sum(w * x * y for w, x, y in zip(ws, xs, ys))
     swx2y = sum(w * x**2 * y for w, x, y in zip(ws, xs, ys))
 
-    det = swx4 * swx2 - swx3 ** 2
+    det = swx4 * swx2 - swx3**2
     if abs(det) < 1e-12:
         return None
 
-    a = (swx2y * swx2 - swxy  * swx3) / det
-    b = (swxy  * swx4 - swx2y * swx3) / det
+    a = (swx2y * swx2 - swxy * swx3) / det
+    b = (swxy * swx4 - swx2y * swx3) / det
     return a, b
