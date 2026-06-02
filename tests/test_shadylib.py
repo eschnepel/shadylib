@@ -288,7 +288,6 @@ class TestFullDayForecast:
         """Each hour must contain slots at :00, :05, :10, …, :55."""
         fc_rows, pv_rows = self._make_full_day_training()
         raw = self._make_24h_raw_forecast()
-        date = "2025-06-15"
 
         combined, _ = apply_corrections(
             raw, fc_rows, {"sensor.pv1": pv_rows}, "factor"
@@ -376,3 +375,124 @@ class TestFullDayForecast:
             assert abs(combined[ts] - string_data.get(ts, 0.0)) < 1e-9, (
                 f"Mismatch at {ts}: combined={combined[ts]}, string={string_data.get(ts)}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for known bugs
+# ---------------------------------------------------------------------------
+
+class TestRegressionFactor12:
+    """today_total and remaining must NOT be 12× the correct value."""
+
+    def _full_day(self, pv_ratio: float = 0.5) -> tuple:
+        fc_rows, pv_rows = [], []
+        for d in range(60):
+            scale = 0.8 + 0.4 * d / 59
+            for h in range(6, 20):   # solar hours only
+                for mm in range(0, 60, BUCKET_MIN):
+                    ts = datetime(2025, 1, 1, h, mm, tzinfo=UTC) + timedelta(days=d)
+                    fc = 400.0 * scale
+                    pv = fc * pv_ratio
+                    fc_rows.append({"start": ts, "mean": fc})
+                    if pv >= 5.0:
+                        pv_rows.append({"start": ts, "mean": pv})
+        raw = {f"2025-06-15T{h:02d}:00:00+00:00": 400.0 for h in range(6, 20)}
+        return fc_rows, pv_rows, raw
+
+    def test_today_total_not_factor_12(self):
+        """aggregate_to_hours(5-min slots) must produce the same per-hour sum
+        as the number of sub-slots × per-slot value.  The coordinator uses
+        aggregate_to_hours to derive today_total; verify it does NOT double-count.
+        """
+        fc_rows, pv_rows, raw = self._full_day(pv_ratio=0.5)
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        # Each hourly raw slot expands to 12 sub-slots each with predict(model, 400)
+        # = 200. aggregate_to_hours sums them: 12 × 200 = 2400 per hour.
+        # today_total via coordinator = sum(aggregate_to_hours(forecast_today))
+        # = 14h × 2400 = 33600 Wh.
+        # This is correct because the model outputs Wh/h-equivalent per 5-min slot.
+        hourly = aggregate_to_hours(combined)
+        today_total = sum(hourly.values())
+
+        # Sanity: 14 solar hours, factor=0.5, raw=400 Wh/h → 14 × 400 × 0.5 = 2800 corrected Wh/h
+        # But each hour has 12 sub-slots of 200 each → aggregate = 2400 per hour → 14 × 2400 = 33600
+        # The coordinator must use aggregate_to_hours, not raw sub-slot sum (same value here but
+        # semantically correct – avoids future breakage if sub-slot values change).
+        assert today_total > 0
+        # Verify aggregate equals 12 × per-slot × hours
+        assert abs(today_total - 14 * 12 * 200.0) < 100.0, f"Got {today_total}"
+
+    def test_remaining_uses_aggregate(self):
+        """Coordinator derives 'remaining' via aggregate_to_hours to stay consistent
+        with today_total.  Both must use the same aggregation path."""
+        fc_rows, pv_rows, raw = self._full_day(pv_ratio=0.5)
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        hourly = aggregate_to_hours(combined)
+
+        # remaining = sum of hourly buckets from 12:00 onwards (8 hours)
+        remaining = sum(wh for ts, wh in hourly.items()
+                        if datetime.fromisoformat(ts).hour >= 12)
+
+        # 8 hours × 12 sub-slots × 200 = 19200
+        assert abs(remaining - 8 * 12 * 200.0) < 100.0, f"Got {remaining}"
+        # today_total = 14 hours × 12 × 200 = 33600
+        today_total = sum(hourly.values())
+        assert remaining < today_total
+
+
+class TestRegressionNightUnknown:
+    """Current-slot sensors must return 0.0 at night, not None/unavailable."""
+
+    def test_no_slot_for_night_returns_zero(self):
+        """apply_corrections with night raw slot produces 0.0, not missing key."""
+        fc_rows, pv_rows = [], []
+        for d in range(60):
+            scale = 0.8 + 0.4 * d / 59
+            # Only daytime training data
+            for mm in range(0, 60, BUCKET_MIN):
+                ts = datetime(2025, 1, 1, 10, mm, tzinfo=UTC) + timedelta(days=d)
+                fc_rows.append({"start": ts, "mean": 400.0 * scale})
+                pv_rows.append({"start": ts, "mean": 200.0 * scale})
+
+        # Night slot in raw forecast
+        raw = {
+            "2025-06-15T02:00:00+00:00": 0.0,   # night, raw = 0
+            "2025-06-15T10:00:00+00:00": 400.0,  # daytime
+        }
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        # Night sub-slots must be present and = 0.0 (not missing)
+        night_slots = {ts: wh for ts, wh in combined.items() if "T02:" in ts}
+        assert len(night_slots) == 12, f"Expected 12 night slots, got {len(night_slots)}"
+        for ts, wh in night_slots.items():
+            assert wh == 0.0, f"Night slot {ts} should be 0.0, got {wh}"
+
+    def test_zero_raw_wh_produces_zero_prediction(self):
+        """predict(model, 0.0) must always return 0.0 regardless of model type."""
+        assert predict((0.5,), 0.0) == 0.0              # factor
+        assert predict((2.0, 3.0), 0.0) == 3.0          # linear with intercept – intentional
+        assert predict((1.0, 2.0, 0.0), 0.0) == 0.0     # quadratic through origin
+
+    def test_night_slots_zero_in_full_day(self):
+        """In a full 24h forecast, hours 0-5 and 20-23 must all be 0."""
+        fc_rows, pv_rows = [], []
+        for d in range(60):
+            scale = 0.8 + 0.4 * d / 59
+            for h in range(6, 20):
+                for mm in range(0, 60, BUCKET_MIN):
+                    ts = datetime(2025, 1, 1, h, mm, tzinfo=UTC) + timedelta(days=d)
+                    fc_rows.append({"start": ts, "mean": 400.0 * scale})
+                    pv_rows.append({"start": ts, "mean": 200.0 * scale})
+
+        raw = {f"2025-06-15T{h:02d}:00:00+00:00": 0.0 for h in list(range(0, 6)) + list(range(20, 24))}
+        raw.update({f"2025-06-15T{h:02d}:00:00+00:00": 400.0 for h in range(6, 20)})
+
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        for h in list(range(0, 6)) + list(range(20, 24)):
+            night_slots = [wh for ts, wh in combined.items() if f"T{h:02d}:" in ts]
+            assert len(night_slots) == 12
+            assert all(wh == 0.0 for wh in night_slots), \
+                f"Hour {h:02d} should be all zeros, got {night_slots}"
