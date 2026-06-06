@@ -106,18 +106,22 @@ def _predict_string(
             continue
 
         if dt.minute == 0:
-            # Hourly slot → expand into 12 five-minute sub-slots
+            # Hourly slot → expand into 12 five-minute sub-slots.
+            # The bucket models are trained on 5-min means (W), and raw_wh is
+            # Wh for the full hour (≈ W at constant power).  predict() therefore
+            # returns a W-equivalent value; to get Wh for a 5-min slot we
+            # divide by 12 (= 60 min / 5 min).
             for mm in range(0, 60, BUCKET_MIN):
                 sub_ts = dt.replace(minute=mm, second=0, microsecond=0).isoformat()
                 bk: BucketKey = (dt.hour, mm)
                 model = models.get(bk)
-                val = r(max(0.0, predict(model, raw_wh))) if model else 0.0
+                val = r(max(0.0, predict(model, raw_wh)) / 12) if model else 0.0
                 result[sub_ts] = r(result.get(sub_ts, 0.0) + val)
         else:
             # Sub-hourly slot → exact or nearest bucket within same hour
             bk = (dt.hour, snap(dt.minute))
             model = _nearest_model(models, dt.hour, snap(dt.minute))
-            val = r(max(0.0, predict(model, raw_wh))) if model else 0.0
+            val = r(max(0.0, predict(model, raw_wh)) / 12) if model else 0.0
             result[iso_ts] = val
 
     return result
