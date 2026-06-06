@@ -415,46 +415,42 @@ class TestRegressionFactor12:
         return fc_rows, pv_rows, raw
 
     def test_today_total_not_factor_12(self) -> None:
-        """aggregate_to_hours(5-min slots) must produce the same per-hour sum
-        as the number of sub-slots × per-slot value.  The coordinator uses
-        aggregate_to_hours to derive today_total; verify it does NOT double-count.
+        """today_total must equal raw x correction_factor, NOT raw x factor x 12.
+
+        After the /12 fix in _predict_string each sub-slot carries Wh for
+        5 minutes, so 12 sub-slots correctly reconstruct one hourly Wh value.
+        14 solar hours x 400 Wh/h x 0.5 factor = 2800 Wh expected.
         """
         fc_rows, pv_rows, raw = self._full_day(pv_ratio=0.5)
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
-        # Each hourly raw slot expands to 12 sub-slots each with predict(model, 400)
-        # = 200. aggregate_to_hours sums them: 12 × 200 = 2400 per hour.
-        # today_total via coordinator = sum(aggregate_to_hours(forecast_today))
-        # = 14h × 2400 = 33600 Wh.
-        # This is correct because the model outputs Wh/h-equivalent per 5-min slot.
-        hourly = aggregate_to_hours(combined)
-        today_total = sum(hourly.values())
+        # Coordinator now sums the 5-min slots directly (no hourly aggregation).
+        today_total = sum(combined.values())
 
-        # Sanity: 14 solar hours, factor=0.5, raw=400 Wh/h → 14 × 400 × 0.5 = 2800 corrected Wh/h
-        # But each hour has 12 sub-slots of 200 each → aggregate = 2400 per hour → 14 × 2400 = 33600
-        # The coordinator must use aggregate_to_hours, not raw sub-slot sum (same value here but
-        # semantically correct – avoids future breakage if sub-slot values change).
-        assert today_total > 0
-        # Verify aggregate equals 12 × per-slot × hours
-        assert abs(today_total - 14 * 12 * 200.0) < 100.0, f"Got {today_total}"
+        # 14 h x 400 Wh/h x 0.5 = 2800 Wh  (allow +-5 % for WLS fitting error)
+        expected = 14 * 400.0 * 0.5
+        assert abs(today_total - expected) < expected * 0.05, f"Got {today_total}"
 
     def test_remaining_uses_aggregate(self) -> None:
-        """Coordinator derives 'remaining' via aggregate_to_hours to stay consistent
-        with today_total.  Both must use the same aggregation path."""
+        """remaining is the sum of 5-min slots whose start >= now (5-min precision).
+
+        With the /12 fix each slot carries the correct Wh fraction, so a direct
+        sum is both correct and more granular than hourly bucketing.
+        """
         fc_rows, pv_rows, raw = self._full_day(pv_ratio=0.5)
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
-        hourly = aggregate_to_hours(combined)
-
-        # remaining = sum of hourly buckets from 12:00 onwards (8 hours)
+        # remaining = slots from 12:00 onwards (8 solar hours of 14 total)
         remaining = sum(
-            wh for ts, wh in hourly.items() if datetime.fromisoformat(ts).hour >= 12
+            wh for ts, wh in combined.items() if datetime.fromisoformat(ts).hour >= 12
         )
+        today_total = sum(combined.values())
 
-        # 8 hours × 12 sub-slots × 200 = 19200
-        assert abs(remaining - 8 * 12 * 200.0) < 100.0, f"Got {remaining}"
-        # today_total = 14 hours × 12 × 200 = 33600
-        today_total = sum(hourly.values())
+        # 8 h x 400 Wh/h x 0.5 = 1600 Wh  (allow +-5 % for WLS fitting error)
+        expected_remaining = 8 * 400.0 * 0.5
+        assert abs(remaining - expected_remaining) < expected_remaining * 0.05, (
+            f"Got {remaining}"
+        )
         assert remaining < today_total
 
 
