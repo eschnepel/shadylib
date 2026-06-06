@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "shadylib"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Solar forecast correction library – HA-independent core for the Shady integration"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,3 +39,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[tool.setuptools_scm]
+fallback_version = "0.0.0.dev0"
