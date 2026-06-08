@@ -5,7 +5,7 @@ HA-independent core used by the Shady Home Assistant integration.
 Public API:
     from shadylib import (
         # Math & utilities
-        r, r6, snap, parse_dt, aggregate_to_hours,
+        r, r6, snap, parse_dt, aggregate_to_hours, normalise_to_5min_day,
         wls2, wls2_origin_quad,
         # Model types
         BucketKey, BucketModels,
@@ -22,6 +22,7 @@ from .math_utils import (
     snap,
     parse_dt,
     aggregate_to_hours,
+    normalise_to_5min_day,
     wls2,
     wls2_origin_quad,
     BUCKET_MIN,
@@ -45,6 +46,7 @@ __all__ = [
     "snap",
     "parse_dt",
     "aggregate_to_hours",
+    "normalise_to_5min_day",
     "wls2",
     "wls2_origin_quad",
     "BUCKET_MIN",
