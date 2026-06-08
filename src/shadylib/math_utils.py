@@ -68,6 +68,66 @@ def aggregate_to_hours(slots: dict[str, float]) -> dict[str, float]:
     return dict(sorted(hourly.items()))
 
 
+def normalise_to_5min_day(
+    slots: dict[str, float],
+    day_start: datetime,
+) -> dict[str, float]:
+    """Return a complete 288-slot dict for *day_start*'s calendar day.
+
+    All timestamps in *slots* that fall on that day are snapped to the
+    nearest 5-minute boundary (floor) and accumulated.  Every slot for
+    the full 24 hours is present in the output; slots with no data are
+    set to 0.0.
+
+    This normalises away sub-5-min timestamps (e.g. 21:12:46) that some
+    forecast providers emit, and fills night-time gaps so consumers always
+    receive a complete, uniform series.
+
+    Args:
+        slots:     {ISO-timestamp: value} – any resolution, any timezone
+        day_start: start of the target calendar day (must be tz-aware,
+                   minute=0, second=0)
+
+    Returns:
+        Ordered dict of 288 entries covering 00:00–23:55 of day_start's day.
+    """
+    from datetime import timedelta, timezone
+
+    day_end = day_start + timedelta(days=1)
+    tz = day_start.tzinfo or timezone.utc
+
+    # Build a zero-filled skeleton for the entire day.
+    result: dict[str, float] = {}
+    t = day_start
+    while t < day_end:
+        result[t.isoformat()] = 0.0
+        t += timedelta(minutes=BUCKET_MIN)
+
+    # Accumulate incoming values into the correct 5-min bucket.
+    for ts, wh in slots.items():
+        try:
+            dt_val = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        if dt_val.tzinfo is None:
+            dt_val = dt_val.replace(tzinfo=timezone.utc)
+        dt_val = dt_val.astimezone(tz)
+
+        if not (day_start <= dt_val < day_end):
+            continue
+
+        snapped = dt_val.replace(
+            minute=(dt_val.minute // BUCKET_MIN) * BUCKET_MIN,
+            second=0,
+            microsecond=0,
+        )
+        key = snapped.isoformat()
+        if key in result:
+            result[key] = round(result[key] + wh, PRECISION)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # WLS solvers
 # ---------------------------------------------------------------------------
