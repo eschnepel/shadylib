@@ -538,17 +538,17 @@ class TestNormaliseTo5MinDay:
 
     def test_slots_span_full_24h(self):
         keys = sorted(normalise_to_5min_day({}, day()))
-        assert keys[0] == "2025-06-02T00:00:00+00:00"
-        assert keys[-1] == "2025-06-02T23:55:00+00:00"
+        assert keys[0] == "2025-06-02T00:00"
+        assert keys[-1] == "2025-06-02T23:55"
 
     def test_exact_5min_timestamp_preserved(self):
         slots = {"2025-06-02T10:15:00+00:00": 42.0}
-        assert normalise_to_5min_day(slots, day())["2025-06-02T10:15:00+00:00"] == 42.0
+        assert normalise_to_5min_day(slots, day())["2025-06-02T10:15"] == 42.0
 
     def test_sub_5min_timestamp_snapped(self):
         slots = {"2025-06-02T21:12:46+00:00": 30.0}
         result = normalise_to_5min_day(slots, day())
-        assert result["2025-06-02T21:10:00+00:00"] == 30.0
+        assert result["2025-06-02T21:10"] == 30.0
         assert result.get("2025-06-02T21:12:46+00:00") is None
 
     def test_sub_5min_accumulation(self):
@@ -557,8 +557,7 @@ class TestNormaliseTo5MinDay:
             "2025-06-02T10:03:00+00:00": 5.0,
         }
         assert (
-            abs(normalise_to_5min_day(slots, day())["2025-06-02T10:00:00+00:00"] - 15.0)
-            < 0.01
+            abs(normalise_to_5min_day(slots, day())["2025-06-02T10:00"] - 15.0) < 0.01
         )
 
     def test_out_of_day_slots_ignored(self):
@@ -568,14 +567,14 @@ class TestNormaliseTo5MinDay:
             "2025-06-02T12:00:00+00:00": 50.0,
         }
         result = normalise_to_5min_day(slots, day())
-        assert result["2025-06-02T12:00:00+00:00"] == 50.0
+        assert result["2025-06-02T12:00"] == 50.0
         assert abs(sum(result.values()) - 50.0) < 0.01
 
     def test_night_slots_are_zero(self):
         slots = {"2025-06-02T12:00:00+00:00": 100.0}
         result = normalise_to_5min_day(slots, day())
-        assert result["2025-06-02T00:00:00+00:00"] == 0.0
-        assert result["2025-06-02T23:55:00+00:00"] == 0.0
+        assert result["2025-06-02T00:00"] == 0.0
+        assert result["2025-06-02T23:55"] == 0.0
 
     def test_keys_are_sorted(self):
         result = normalise_to_5min_day({}, day())
@@ -590,15 +589,23 @@ class TestNormaliseTo5MinDay:
 
     def test_hourly_slot_placed_at_hour_boundary(self):
         slots = {"2025-06-02T14:00:00+00:00": 200.0}
-        assert normalise_to_5min_day(slots, day())["2025-06-02T14:00:00+00:00"] == 200.0
+        assert normalise_to_5min_day(slots, day())["2025-06-02T14:00"] == 200.0
 
     def test_naive_timestamp_treated_as_utc(self):
         slots = {"2025-06-02T10:00:00": 77.0}
         result = normalise_to_5min_day(slots, day())
-        assert result["2025-06-02T10:00:00+00:00"] == 77.0
+        assert result["2025-06-02T10:00"] == 77.0
+
+    def test_keys_are_minute_precision_no_tz(self):
+        """Keys must be YYYY-MM-DDTHH:MM – no seconds, no UTC offset."""
+        import re
+
+        pattern = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$")
+        for key in normalise_to_5min_day({}, day()):
+            assert pattern.match(key), f"Key has unexpected format: {key!r}"
 
     def test_invalid_timestamp_skipped(self):
         slots = {"not-a-date": 99.0, "2025-06-02T10:00:00+00:00": 10.0}
         result = normalise_to_5min_day(slots, day())
-        assert result["2025-06-02T10:00:00+00:00"] == 10.0
+        assert result["2025-06-02T10:00"] == 10.0
         assert abs(sum(result.values()) - 10.0) < 0.01

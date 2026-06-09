@@ -83,6 +83,10 @@ def normalise_to_5min_day(
     forecast providers emit, and fills night-time gaps so consumers always
     receive a complete, uniform series.
 
+    Output keys are formatted as ``YYYY-MM-DDTHH:MM`` (no seconds, no UTC
+    offset) to keep HA state-attribute serialisation well below the 16 kB
+    per-attribute limit.
+
     Args:
         slots:     {ISO-timestamp: value} – any resolution, any timezone
         day_start: start of the target calendar day (must be tz-aware,
@@ -90,6 +94,7 @@ def normalise_to_5min_day(
 
     Returns:
         Ordered dict of 288 entries covering 00:00–23:55 of day_start's day.
+        Keys are ``YYYY-MM-DDTHH:MM`` strings in the timezone of *day_start*.
     """
     from datetime import timedelta, timezone
 
@@ -100,7 +105,7 @@ def normalise_to_5min_day(
     result: dict[str, float] = {}
     t = day_start
     while t < day_end:
-        result[t.isoformat()] = 0.0
+        result[t.strftime("%Y-%m-%dT%H:%M")] = 0.0
         t += timedelta(minutes=BUCKET_MIN)
 
     # Accumulate incoming values into the correct 5-min bucket.
@@ -121,7 +126,7 @@ def normalise_to_5min_day(
             second=0,
             microsecond=0,
         )
-        key = snapped.isoformat()
+        key = snapped.strftime("%Y-%m-%dT%H:%M")
         if key in result:
             result[key] = round(result[key] + wh, PRECISION)
 
