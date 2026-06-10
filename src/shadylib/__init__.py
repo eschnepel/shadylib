@@ -13,6 +13,8 @@ Public API:
         build_bucket_models, predict,
         # Correction pipeline
         apply_corrections,
+        # Effective power loss distribution
+        compute_effective_strings, split_combined_sensor,
     )
 """
 
@@ -38,6 +40,7 @@ from .models import (
     PV_MIN_W,
 )
 from .correction import apply_corrections
+from .effective import compute_effective_strings, split_combined_sensor
 
 __all__ = [
     # math_utils
@@ -61,4 +64,7 @@ __all__ = [
     "PV_MIN_W",
     # correction
     "apply_corrections",
+    # effective
+    "compute_effective_strings",
+    "split_combined_sensor",
 ]
