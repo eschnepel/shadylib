@@ -344,3 +344,91 @@ class TestBuildBucketModels:
         assert m00 is not None
         assert m15 is not None
         assert predict(m00, fc_val) > predict(m15, fc_val)
+
+
+# ---------------------------------------------------------------------------
+# Regression: timezone-naive vs timezone-aware datetime keys
+# ---------------------------------------------------------------------------
+
+
+class TestTimezoneNormalisationRegression:
+    """build_bucket_models must produce models even when fc_rows and pv_rows
+    contain datetimes with different timezone-awareness.
+
+    This reproduces the production bug where HA supplies Unix-timestamp rows
+    (parsed as UTC-aware) for one sensor and ISO-string rows (parsed as
+    timezone-naive) for another sensor, causing set(fc_map) & set(pv_map) to
+    return an empty intersection despite both datasets covering the same wall
+    clock times.
+    """
+
+    def _make_aware(self, hour: int, days: int = 30) -> list[dict]:
+        return [
+            {
+                "start": datetime(2025, 1, 1, hour, 0, tzinfo=UTC) + timedelta(days=d),
+                "mean": 200.0,
+            }
+            for d in range(days)
+        ]
+
+    def _make_naive(self, hour: int, days: int = 30) -> list[dict]:
+        """Same timestamps, but timezone-naive (as fromisoformat without offset)."""
+        return [
+            {
+                "start": datetime(2025, 1, 1 + d, hour, 0),  # no tzinfo
+                "mean": 100.0,
+            }
+            for d in range(days)
+        ]
+
+    def test_naive_fc_aware_pv_produces_models(self):
+        """fc_rows naive, pv_rows aware → models must not be empty."""
+        fc_rows = self._make_naive(10)
+        pv_rows = self._make_aware(10)
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, (
+            "Expected models but got empty dict (timezone mismatch not fixed)"
+        )
+
+    def test_aware_fc_naive_pv_produces_models(self):
+        """fc_rows aware, pv_rows naive → models must not be empty."""
+        fc_rows = self._make_aware(10)
+        pv_rows = self._make_naive(10)
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, (
+            "Expected models but got empty dict (timezone mismatch not fixed)"
+        )
+
+    def test_mixed_offsets_produce_models(self):
+        """fc_rows in +02:00, pv_rows in UTC → same wall-clock times → models expected."""
+        from datetime import timezone as tz
+
+        cest = tz(timedelta(hours=2))
+        fc_rows = [
+            {
+                "start": datetime(2025, 1, 1 + d, 12, 0, tzinfo=cest),
+                "mean": 200.0,
+            }
+            for d in range(30)
+        ]
+        pv_rows = [
+            {
+                "start": datetime(2025, 1, 1 + d, 10, 0, tzinfo=UTC),  # same instant
+                "mean": 100.0,
+            }
+            for d in range(30)
+        ]
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, (
+            "Expected models for identical wall-clock times in different offsets"
+        )
+
+    def test_prediction_correct_after_normalisation(self):
+        """With pv = 0.5 * fc and mixed tz, factor model must predict ~0.5 * fc."""
+        fc_rows = self._make_aware(10)
+        pv_rows = self._make_naive(10)  # mean=100 vs fc mean=200 → factor≈0.5
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        model = models.get((10, 0))
+        assert model is not None
+        result = predict(model, 200.0)
+        assert abs(result - 100.0) < 5.0, f"Expected ~100.0, got {result}"

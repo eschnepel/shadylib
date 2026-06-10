@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from .math_utils import r, r6, snap, wls2, wls2_origin_quad
+
+_UTC = timezone.utc
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,10 +62,20 @@ def predict(model: BucketValue, x: float) -> float:
 
 
 def asDateTime(iso_ts: str | datetime) -> datetime:
+    """Parse *iso_ts* to a timezone-aware UTC datetime.
+
+    Naive datetimes (no tzinfo) are assumed to be UTC.  This ensures that
+    the fc_map / pv_map key-intersection works correctly even when HA
+    supplies a mix of timezone-aware and timezone-naive timestamps for
+    different sensors (e.g. Unix-timestamp rows vs ISO-string rows).
+    """
     if isinstance(iso_ts, datetime):
-        return iso_ts
+        dt = iso_ts
     else:
-        return datetime.fromisoformat(iso_ts)
+        dt = datetime.fromisoformat(iso_ts)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_UTC)
+    return dt.astimezone(_UTC)
 
 
 # ---------------------------------------------------------------------------
