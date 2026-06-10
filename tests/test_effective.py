@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from shadylib import compute_effective_strings, split_combined_sensor
 
