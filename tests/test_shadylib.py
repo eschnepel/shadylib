@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from datetime import datetime, timedelta, timezone
 
 from typing import Any
@@ -609,3 +610,292 @@ class TestNormaliseTo5MinDay:
         result = normalise_to_5min_day(slots, day())
         assert result["2025-06-02T10:00"] == 10.0
         assert abs(sum(result.values()) - 10.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Regression: hourly fc sensor → all 12 sub-slots must be non-zero
+# ---------------------------------------------------------------------------
+
+
+class TestHourlyFcBucketCoverage:
+    """When the fc sensor only has hourly statistics (timestamp at :00 each
+    hour), build_bucket_models only produces bucket models at minute=0.
+
+    Before the fix, _predict_string used models.get(bk) for the hourly
+    expansion, returning None for mm=5…55 → 11 of 12 sub-slots were 0.0
+    ('vereinzelte slots' bug).  After the fix, _nearest_model is used so
+    every sub-slot falls back to the (hour, 0) model.
+    """
+
+    def _hourly_fc_rows(
+        self, hour: int = 10, days: int = 30, mean: float = 400.0
+    ) -> InputHistory:
+        """FC rows with one entry per hour (hourly sensor, no :05…:55 rows)."""
+        return [
+            {
+                "start": datetime(2025, 1, 1, hour, 0, tzinfo=UTC) + timedelta(days=d),
+                "mean": mean,
+            }
+            for d in range(days)
+        ]
+
+    def _pv_rows_5min(
+        self, hour: int = 10, days: int = 30, mean: float = 200.0
+    ) -> InputHistory:
+        """PV rows with 5-min resolution (realistic recorder data)."""
+        rows: InputHistory = []
+        for d in range(days):
+            for mm in range(0, 60, BUCKET_MIN):
+                rows.append(
+                    {
+                        "start": datetime(2025, 1, 1, hour, mm, tzinfo=UTC)
+                        + timedelta(days=d),
+                        "mean": mean,
+                    }
+                )
+        return rows
+
+    def test_all_12_sub_slots_non_zero(self) -> None:
+        """All 12 sub-slots of an hourly raw slot must carry a prediction."""
+        fc_rows = self._hourly_fc_rows(hour=10, mean=400.0)
+        pv_rows = self._pv_rows_5min(hour=10, mean=200.0)
+        raw = {"2025-06-01T10:00:00+00:00": 400.0}
+
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        hour_slots = {ts: v for ts, v in combined.items() if "T10:" in ts}
+        assert len(hour_slots) == 12, f"Expected 12 sub-slots, got {len(hour_slots)}"
+        zero_slots = [ts for ts, v in hour_slots.items() if v == 0.0]
+        assert not zero_slots, (
+            f"Sub-slots with zero value (hourly fc, nearest-model fallback failed): {zero_slots}"
+        )
+
+    def test_sub_slot_values_consistent(self) -> None:
+        """All sub-slots should carry the same value (uniform training data → same model)."""
+        fc_rows = self._hourly_fc_rows(hour=10, mean=400.0)
+        pv_rows = self._pv_rows_5min(hour=10, mean=200.0)
+        raw = {"2025-06-01T10:00:00+00:00": 400.0}
+
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        hour_vals = [v for ts, v in combined.items() if "T10:" in ts]
+        assert len(set(hour_vals)) == 1, (
+            f"Sub-slot values differ unexpectedly with uniform training data: {hour_vals}"
+        )
+
+    def test_hourly_total_preserved(self) -> None:
+        """Sum of 12 sub-slots must equal the full correction applied to raw_wh."""
+        fc_rows = self._hourly_fc_rows(hour=10, mean=400.0)
+        pv_rows = self._pv_rows_5min(hour=10, mean=200.0)
+        raw_wh = 400.0
+        raw = {"2025-06-01T10:00:00+00:00": raw_wh}
+
+        combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
+
+        hour_total = sum(v for ts, v in combined.items() if "T10:" in ts)
+        # Factor = 200/400 = 0.5 → corrected ≈ raw_wh * 0.5 = 200 Wh
+        assert abs(hour_total - raw_wh * 0.5) < 1.0, (
+            f"Hour total {hour_total:.2f} Wh deviates from expected {raw_wh * 0.5:.2f} Wh"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Realistic tree-shading scenario
+# ---------------------------------------------------------------------------
+
+# Measured hourly fc and PV values for a string shaded by a tree in the
+# morning (hours 7–12, pv/fc ≈ 0.20) and unobstructed in the afternoon
+# (hours 13–19, pv/fc rises to > 1.0 due to favourable angle).
+#
+# Source: hand-crafted table representing a realistic southern-European
+# residential PV installation with a deciduous tree to the east/south-east.
+_TREE_SHADE_TABLE: dict[int, tuple[float, float]] = {
+    7: (265, 53),
+    8: (490, 98),
+    9: (673, 135),
+    10: (816, 163),
+    11: (918, 184),
+    12: (980, 196),
+    13: (1000, 550),
+    14: (980, 796),
+    15: (918, 934),
+    16: (816, 963),
+    17: (673, 885),
+    18: (490, 698),
+    19: (265, 403),
+}
+
+
+def _tree_shade_rows(
+    days: int = 5,
+    base_date: datetime | None = None,
+    scale: float = 1.0,
+) -> tuple[InputHistory, InputHistory]:
+    """Build fc_rows / pv_rows for the tree-shading scenario.
+
+    Sub-hourly PV values are linearly interpolated between the hourly table
+    entries (pv at :00 of hour h → pv at :00 of hour h+1).  FC is kept
+    constant within each hour (a forecast mean has no intra-hour ramp).
+
+    A small daily scale ramp (0.8 … 1.2 × base values) is applied across
+    the training days so that WLS-based fitters (linear, quadratic) receive
+    a spread of x-values and can produce a non-degenerate fit.
+
+    Args:
+        days:       Number of training days to generate.
+        base_date:  Start date (UTC midnight).  Defaults to 2025-01-01.
+        scale:      Additional uniform scale factor applied to both fc and pv.
+    """
+    if base_date is None:
+        base_date = datetime(2025, 1, 1, tzinfo=UTC)
+
+    solar_hours = sorted(_TREE_SHADE_TABLE)
+
+    fc_rows: InputHistory = []
+    pv_rows: InputHistory = []
+
+    for d in range(days):
+        # Daily ramp: 0.8 on day 0, 1.2 on the last day – provides the x-spread
+        # needed for linear/quadratic WLS to produce non-degenerate fits.
+        day_scale_fc = scale * (0.7 + 0.5 * d / max(days - 1, 1))
+        day_scale_pv = scale * (0.8 + 0.4 * d / max(days - 1, 1))
+        day_offset = timedelta(days=d)
+        for i, h in enumerate(solar_hours):
+            fc_h, pv_h = _TREE_SHADE_TABLE[h]
+            # Next hour's pv for intra-hour interpolation
+            next_h = solar_hours[i + 1] if i + 1 < len(solar_hours) else None
+            pv_next = _TREE_SHADE_TABLE[next_h][1] if (next_h == h + 1) else 0.0
+
+            for mm in range(0, 60, BUCKET_MIN):
+                ts = base_date + day_offset + timedelta(hours=h, minutes=mm)
+                pv_mm = pv_h + (pv_next - pv_h) * mm / 60
+                fc_rows.append({"start": ts, "mean": fc_h * day_scale_fc})
+                pv_rows.append({"start": ts, "mean": pv_mm * day_scale_pv})
+
+    return fc_rows, pv_rows
+
+
+class TestTreeShadingScenario:
+    """Apply all three fitters to a realistic tree-shading scenario.
+
+    The shading profile has two distinct regimes:
+      - Morning (h 7–12): pv/fc ≈ 0.20  (tree shadow)
+      - Afternoon (h 13–19): pv/fc rising from 0.55 → 1.52 (unobstructed)
+
+    Tests verify that each algorithm learns the per-bucket correction and
+    reproduces the shading asymmetry in predictions.
+    """
+
+    _SHADED_HOURS = range(7, 13)  # pv/fc ≈ 0.20
+    _CLEAR_HOURS = range(13, 20)  # pv/fc >> 0.20
+
+    def _raw_forecast(self, date: str = "2025-06-15") -> dict[str, float]:
+        """One hourly slot per solar hour."""
+        raw = {}
+        for h, (fc_h, _) in _TREE_SHADE_TABLE.items():
+            raw[f"{date}T{h:02d}:00:00+00:00"] = float(fc_h)
+        return raw
+
+    def _shaded_mean(self, per_string: dict[str, dict[str, float]], hour: int) -> float:
+        """Mean predicted value across the 12 sub-slots of *hour*."""
+        slots = per_string.get("sensor.pv", {})
+        vals = [v for ts, v in slots.items() if f"T{hour:02d}:" in ts]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    @pytest.mark.parametrize("algorithm", ["factor", "linear", "quadratic"])
+    def test_models_are_built(self, algorithm: str) -> None:
+        """build_bucket_models must succeed for all three algorithms."""
+        fc_rows, pv_rows = _tree_shade_rows(days=5)
+        raw = self._raw_forecast()
+        _, per_string = apply_corrections(
+            raw, fc_rows, {"sensor.pv": pv_rows}, algorithm
+        )
+        assert "sensor.pv" in per_string, (
+            f"algorithm={algorithm}: no string forecast produced"
+        )
+
+    @pytest.mark.parametrize("algorithm", ["factor", "linear", "quadratic"])
+    def test_shading_asymmetry_captured(self, algorithm: str) -> None:
+        """Afternoon predictions must exceed morning predictions, reflecting
+        the unshaded afternoon vs shaded morning."""
+        fc_rows, pv_rows = _tree_shade_rows(days=5)
+        raw = self._raw_forecast()
+        _, per_string = apply_corrections(
+            raw, fc_rows, {"sensor.pv": pv_rows}, algorithm
+        )
+        slots = per_string.get("sensor.pv", {})
+        assert slots, f"algorithm={algorithm}: empty prediction"
+
+        # Mean prediction over shaded morning hours
+        morning_vals = [
+            v
+            for ts, v in slots.items()
+            if any(f"T{h:02d}:" in ts for h in self._SHADED_HOURS)
+        ]
+        afternoon_vals = [
+            v
+            for ts, v in slots.items()
+            if any(f"T{h:02d}:" in ts for h in self._CLEAR_HOURS)
+        ]
+
+        morning_mean = sum(morning_vals) / len(morning_vals) if morning_vals else 0.0
+        afternoon_mean = (
+            sum(afternoon_vals) / len(afternoon_vals) if afternoon_vals else 0.0
+        )
+
+        assert afternoon_mean > morning_mean * 2, (
+            f"algorithm={algorithm}: afternoon mean {afternoon_mean:.1f} should be "
+            f"more than 2× morning mean {morning_mean:.1f} (tree-shading asymmetry)"
+        )
+
+    @pytest.mark.parametrize("algorithm", ["factor", "linear", "quadratic"])
+    def test_288_sub_slots_produced(self, algorithm: str) -> None:
+        """A full-day raw forecast (hourly slots for all 13 solar hours) must
+        expand to 13 × 12 = 156 sub-slots in the string forecast."""
+        fc_rows, pv_rows = _tree_shade_rows(days=5)
+        raw = self._raw_forecast()
+        _, per_string = apply_corrections(
+            raw, fc_rows, {"sensor.pv": pv_rows}, algorithm
+        )
+        n = len(per_string.get("sensor.pv", {}))
+        assert n == 13 * 12, f"algorithm={algorithm}: expected 156 sub-slots, got {n}"
+
+    @pytest.mark.parametrize("algorithm", ["factor", "linear", "quadratic"])
+    def test_no_negative_predictions(self, algorithm: str) -> None:
+        fc_rows, pv_rows = _tree_shade_rows(days=5)
+        raw = self._raw_forecast()
+        _, per_string = apply_corrections(
+            raw, fc_rows, {"sensor.pv": pv_rows}, algorithm
+        )
+        negatives = {
+            ts: v for ts, v in per_string.get("sensor.pv", {}).items() if v < 0
+        }
+        assert not negatives, (
+            f"algorithm={algorithm}: negative prediction values: {negatives}"
+        )
+
+    @pytest.mark.parametrize("algorithm", ["factor", "linear", "quadratic"])
+    def test_morning_ratio_approx_020(self, algorithm: str) -> None:
+        """For shaded hours 7–12, predicted/fc should be close to 0.20."""
+        fc_rows, pv_rows = _tree_shade_rows(days=5)
+        raw = self._raw_forecast()
+        _, per_string = apply_corrections(
+            raw, fc_rows, {"sensor.pv": pv_rows}, algorithm
+        )
+        slots = per_string.get("sensor.pv", {})
+
+        # Sum predictions and raw fc over shaded hours
+        pred_total = sum(
+            v
+            for ts, v in slots.items()
+            if any(f"T{h:02d}:" in ts for h in self._SHADED_HOURS)
+        )
+        fc_total = sum(
+            fc for h, (fc, _) in _TREE_SHADE_TABLE.items() if h in self._SHADED_HOURS
+        )
+
+        ratio = pred_total / fc_total if fc_total else 0.0
+        assert 0.10 < ratio < 0.35, (
+            f"algorithm={algorithm}: morning pv/fc ratio {ratio:.3f} outside [0.10, 0.35] "
+            f"(expected ~0.20 for tree-shaded morning)"
+        )

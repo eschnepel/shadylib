@@ -25,7 +25,6 @@ from .math_utils import r, snap, BUCKET_MIN
 from .models import (
     build_bucket_models,
     predict,
-    BucketKey,
     BucketValue,
     BucketModels,
     InputHistory,
@@ -111,15 +110,19 @@ def _predict_string(
             # Wh for the full hour (≈ W at constant power).  predict() therefore
             # returns a W-equivalent value; to get Wh for a 5-min slot we
             # divide by 12 (= 60 min / 5 min).
+            #
+            # When the fc sensor supplies only hourly statistics, training data
+            # only produces bucket models at minute=0 for each hour.  Using an
+            # exact model.get(bk) lookup would return None for mm=5…55, making
+            # 11 of 12 sub-slots zero.  _nearest_model falls back to the closest
+            # bucket within the same hour, so all sub-slots receive a prediction.
             for mm in range(0, 60, BUCKET_MIN):
                 sub_ts = dt.replace(minute=mm, second=0, microsecond=0).isoformat()
-                bk: BucketKey = (dt.hour, mm)
-                model = models.get(bk)
+                model = _nearest_model(models, dt.hour, mm)
                 val = r(max(0.0, predict(model, raw_wh)) / 12) if model else 0.0
                 result[sub_ts] = r(result.get(sub_ts, 0.0) + val)
         else:
             # Sub-hourly slot → exact or nearest bucket within same hour
-            bk = (dt.hour, snap(dt.minute))
             model = _nearest_model(models, dt.hour, snap(dt.minute))
             val = r(max(0.0, predict(model, raw_wh)) / 12) if model else 0.0
             result[iso_ts] = val
