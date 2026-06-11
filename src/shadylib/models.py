@@ -62,20 +62,34 @@ def predict(model: BucketValue, x: float) -> float:
 
 
 def asDateTime(iso_ts: str | datetime) -> datetime:
-    """Parse *iso_ts* to a timezone-aware UTC datetime.
+    """Parse *iso_ts* to a normalised, timezone-aware UTC datetime.
 
-    Naive datetimes (no tzinfo) are assumed to be UTC.  This ensures that
-    the fc_map / pv_map key-intersection works correctly even when HA
-    supplies a mix of timezone-aware and timezone-naive timestamps for
-    different sensors (e.g. Unix-timestamp rows vs ISO-string rows).
+    Normalisation steps applied in order:
+    1. Parse string → datetime if needed.
+    2. Attach UTC to naive datetimes (HA recorder sometimes omits tzinfo for
+       ISO-string rows while returning UTC-aware datetimes for Unix-timestamp
+       rows).
+    3. Convert to UTC.
+    4. Floor seconds and microseconds to zero, and snap the minute to the
+       nearest 5-minute boundary.  Some custom integrations (e.g. Solakon)
+       store recorder statistics with a non-zero second offset, which would
+       prevent the fc_map / pv_map key-intersection from finding any common
+       timestamps despite both datasets covering the same wall-clock slots.
     """
     if isinstance(iso_ts, datetime):
         dt = iso_ts
     else:
         dt = datetime.fromisoformat(iso_ts)
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=_UTC)
-    return dt.astimezone(_UTC)
+        dt = dt.replace(tzinfo=_UTC)
+    else:
+        dt = dt.astimezone(_UTC)
+    # Floor to the 5-minute bucket boundary
+    return dt.replace(
+        minute=(dt.minute // 5) * 5,
+        second=0,
+        microsecond=0,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -432,3 +432,88 @@ class TestTimezoneNormalisationRegression:
         assert model is not None
         result = predict(model, 200.0)
         assert abs(result - 100.0) < 5.0, f"Expected ~100.0, got {result}"
+
+
+# ---------------------------------------------------------------------------
+# Regression: non-zero seconds/microseconds in recorder timestamps (Solakon)
+# ---------------------------------------------------------------------------
+
+
+class TestSecondOffsetRegression:
+    """build_bucket_models must produce models even when fc_rows and pv_rows
+    have timestamps that differ by sub-minute offsets (seconds / microseconds).
+
+    This reproduces the production bug seen with sensor.solakon_one_string_4_leistung:
+    fc_rows=7683, pv_rows=7872, but common=[] because the recorder returned
+    timestamps such as 10:00:00 for the fc sensor and 10:00:30 for the Solakon
+    sensor.  Both cover the same 5-minute bucket but are unequal as dict keys.
+    """
+
+    def _make_rows(
+        self,
+        hour: int,
+        second: int = 0,
+        microsecond: int = 0,
+        days: int = 30,
+        mean: float = 200.0,
+    ) -> list[dict]:
+        return [
+            {
+                "start": datetime(2025, 1, 1, hour, 0, second, microsecond, tzinfo=UTC)
+                + timedelta(days=d),
+                "mean": mean,
+            }
+            for d in range(days)
+        ]
+
+    def test_second_offset_fc_produces_models(self):
+        """fc timestamps at :00:30, pv at :00:00 → same bucket → models expected."""
+        fc_rows = self._make_rows(10, second=30, mean=200.0)
+        pv_rows = self._make_rows(10, second=0, mean=100.0)
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, "Second offset in fc timestamps prevented model building"
+
+    def test_second_offset_pv_produces_models(self):
+        """pv timestamps at :00:30, fc at :00:00 → same bucket → models expected."""
+        fc_rows = self._make_rows(10, second=0, mean=200.0)
+        pv_rows = self._make_rows(10, second=30, mean=100.0)
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, "Second offset in pv timestamps prevented model building"
+
+    def test_microsecond_offset_produces_models(self):
+        """Fractional-second Unix timestamps (microseconds) → same bucket → models."""
+        fc_rows = self._make_rows(10, microsecond=0, mean=200.0)
+        pv_rows = self._make_rows(10, microsecond=123000, mean=100.0)
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, "Microsecond offset in pv timestamps prevented model building"
+
+    def test_sub_bucket_minute_snapped(self):
+        """Timestamps within the same 5-min bucket but at different minutes
+        (e.g. 10:02 and 10:00) snap to the same bucket key."""
+        fc_rows = [
+            {
+                "start": datetime(2025, 1, 1, 10, 0, tzinfo=UTC) + timedelta(days=d),
+                "mean": 200.0,
+            }
+            for d in range(30)
+        ]
+        pv_rows = [
+            {
+                "start": datetime(2025, 1, 1, 10, 2, tzinfo=UTC) + timedelta(days=d),
+                "mean": 100.0,
+            }
+            for d in range(30)
+        ]
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        assert models, "Sub-bucket minute offset prevented model building"
+        assert (10, 0) in models
+
+    def test_prediction_correct_with_second_offset(self):
+        """Factor model gives correct ratio despite second-offset timestamps."""
+        fc_rows = self._make_rows(10, second=0, mean=400.0)
+        pv_rows = self._make_rows(10, second=30, mean=200.0)  # ratio = 0.5
+        models = build_bucket_models(fc_rows, pv_rows, "factor")
+        model = models.get((10, 0))
+        assert model is not None
+        result = predict(model, 400.0)
+        assert abs(result - 200.0) < 5.0, f"Expected ~200.0, got {result}"
