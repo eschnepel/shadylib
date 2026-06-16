@@ -5,12 +5,13 @@ Contains:
   - Datetime parsing (parse_dt)
   - 5-min bucket snapping (snap)
   - Hourly aggregation (aggregate_to_hours)
+  - EM forecast normalisation (normalise_em_to_5min)
   - WLS solvers (wls2, wls2_origin_quad)
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 PRECISION = 2  # decimal places for all Wh output values
 BUCKET_MIN = 5  # minutes per bucket
@@ -66,6 +67,98 @@ def aggregate_to_hours(slots: dict[str, float]) -> dict[str, float]:
             continue
         hourly[key] = r(hourly.get(key, 0.0) + wh)
     return dict(sorted(hourly.items()))
+
+
+def normalise_em_to_5min(
+    em_slots: dict[str, float],
+) -> dict[str, float]:
+    """Distribute arbitrary-interval Energy Manager values into 5-minute slots.
+
+    The EM delivers forecast values at irregular timestamps that reflect when
+    the provider changes its value, not 5-minute boundaries.  Each EM value is
+    valid from its own timestamp until the next EM timestamp (or indefinitely
+    for the last entry).
+
+    Each EM interval is distributed pro-rata across the 5-minute slots it
+    overlaps.  Boundary slots receive a proportional fraction based on the
+    overlap duration within the slot.
+
+    Args:
+        em_slots: {ISO-timestamp: Wh} – raw EM forecast, arbitrary resolution.
+                  Values are already in Wh/slot-equivalent after unit
+                  conversion by the caller (to_wh_per_slot).
+
+    Returns:
+        {ISO-timestamp: Wh} – one entry per 5-minute slot that receives any
+        contribution.  Keys are ISO strings with second=0, microsecond=0 at
+        the slot boundary (minute snapped down to nearest 5).  Slots with zero
+        contribution are omitted.
+
+    Notes:
+        - Timezone information is preserved from the input timestamps.
+        - If em_slots is empty, an empty dict is returned.
+        - The last EM entry has no defined end; it is assigned to exactly the
+          one 5-minute slot that contains its timestamp (no forward propagation
+          beyond the known forecast horizon).
+    """
+    if not em_slots:
+        return {}
+
+    # Parse and sort entries
+    parsed: list[tuple[datetime, float]] = []
+    for iso_ts, wh in em_slots.items():
+        try:
+            dt = datetime.fromisoformat(iso_ts)
+        except ValueError:
+            continue
+        parsed.append((dt, wh))
+
+    if not parsed:
+        return {}
+
+    parsed.sort(key=lambda x: x[0])
+
+    _5min = timedelta(minutes=BUCKET_MIN)
+    result: dict[str, float] = {}
+
+    def _slot_start(dt: datetime) -> datetime:
+        """Floor dt to the nearest 5-minute boundary, preserving tzinfo."""
+        return dt.replace(
+            minute=(dt.minute // BUCKET_MIN) * BUCKET_MIN,
+            second=0,
+            microsecond=0,
+        )
+
+    def _add(slot_dt: datetime, wh: float) -> None:
+        key = slot_dt.isoformat()
+        result[key] = round(result.get(key, 0.0) + wh, PRECISION)
+
+    for i, (start_dt, wh) in enumerate(parsed):
+        if i + 1 < len(parsed):
+            end_dt = parsed[i + 1][0]
+        else:
+            # Last entry: assign only to its own 5-minute slot
+            _add(_slot_start(start_dt), wh)
+            continue
+
+        interval_secs = (end_dt - start_dt).total_seconds()
+        if interval_secs <= 0:
+            continue
+
+        # Walk through all 5-minute slots that overlap [start_dt, end_dt)
+        slot = _slot_start(start_dt)
+        while slot < end_dt:
+            slot_end = slot + _5min
+            # Overlap of this EM interval with this slot
+            overlap_start = max(start_dt, slot)
+            overlap_end = min(end_dt, slot_end)
+            overlap_secs = (overlap_end - overlap_start).total_seconds()
+            if overlap_secs > 0:
+                fraction = overlap_secs / interval_secs
+                _add(slot, wh * fraction)
+            slot = slot_end
+
+    return dict(sorted(result.items()))
 
 
 def normalise_to_5min_day(
