@@ -38,14 +38,19 @@ def make_rows(
     days: int = 60,
     vary: bool = True,
 ) -> tuple[InputHistory, InputHistory]:
-    """Generate realistic training rows with optional daily variation."""
+    """Generate realistic training rows with optional daily variation.
+
+    Means are in Wh/slot (W × 5/60), matching what to_wh_per_slot("W") produces
+    from 5-minute recorder statistics.
+    """
     fc_rows, pv_rows = [], []
     ratio = pv_val / fc_val if fc_val else 0.5
+    slot_h = 5 / 60  # 5-minute slot in hours
     for d in range(days):
         scale = (0.8 + 0.4 * d / max(days - 1, 1)) if vary else 1.0
         for mm in minutes:
             ts = datetime(2025, 1, 1, hour, mm, tzinfo=UTC) + timedelta(days=d)
-            fc = fc_val * scale
+            fc = fc_val * scale * slot_h
             pv = fc * ratio
             fc_rows.append({"start": ts, "mean": fc})
             pv_rows.append({"start": ts, "mean": pv})
@@ -193,7 +198,9 @@ class TestApplyCorrections:
 
     def test_hourly_slot_expands_to_12_sub_slots(self) -> None:
         fc_rows, pv_rows = self._training(400.0, 200.0, 10)
-        raw = {"2025-06-01T10:00:00+00:00": 400.0}
+        # EM delivers hourly slots; normalise_em_to_5min distributes into 12 sub-slots
+        raw_em = {"2025-06-01T10:00:00+00:00": 400.0, "2025-06-01T11:00:00+00:00": 0.0}
+        raw = normalise_em_to_5min(raw_em)
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv1": pv_rows}, "factor")
         hour_keys = [k for k in combined if "T10:" in k]
         assert len(hour_keys) == 12
@@ -276,12 +283,12 @@ class TestFullDayForecast:
         return fc_rows, pv_rows
 
     def _make_24h_raw_forecast(self, date: str = "2025-06-15") -> dict[str, float]:
-        """One hourly slot per hour, midnight to 23:00."""
-        raw = {}
+        """One hourly EM slot per hour normalised to 5-minute slots."""
+        em: dict[str, float] = {}
         for h in range(24):
-            ts = f"{date}T{h:02d}:00:00+00:00"
-            raw[ts] = 400.0 if 6 <= h <= 19 else 0.0
-        return raw
+            em[f"{date}T{h:02d}:00:00+00:00"] = 400.0 if 6 <= h <= 19 else 0.0
+        em["2025-06-16T00:00:00+00:00"] = 0.0  # sentinel: defines end of last slot
+        return normalise_em_to_5min(em)
 
     def test_24h_forecast_expands_to_288_slots(self) -> None:
         """24 hourly FC slots × 12 buckets = 288 five-minute slots."""
@@ -290,8 +297,9 @@ class TestFullDayForecast:
 
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv1": pv_rows}, "factor")
 
-        assert len(combined) == 288, (
-            f"Expected 288 slots (24h × 12 buckets), got {len(combined)}"
+        day_slots = {ts: v for ts, v in combined.items() if "2025-06-15" in ts}
+        assert len(day_slots) == 288, (
+            f"Expected 288 slots (24h × 12 buckets), got {len(day_slots)}"
         )
 
     def test_all_24_hours_present(self) -> None:
@@ -302,7 +310,7 @@ class TestFullDayForecast:
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv1": pv_rows}, "factor")
 
         for h in range(24):
-            hour_slots = [ts for ts in combined if f"T{h:02d}:" in ts]
+            hour_slots = [ts for ts in combined if f"2025-06-15T{h:02d}:" in ts]
             assert len(hour_slots) == 12, (
                 f"Hour {h:02d} has {len(hour_slots)} slots, expected 12"
             )
@@ -316,8 +324,7 @@ class TestFullDayForecast:
 
         for h in range(24):
             for mm in range(0, 60, 5):
-                # Timestamp format may vary with UTC offset; check by partial match
-                expected_partial = f"T{h:02d}:{mm:02d}:"
+                expected_partial = f"2025-06-15T{h:02d}:{mm:02d}:"
                 matches = [ts for ts in combined if expected_partial in ts]
                 assert len(matches) == 1, (
                     f"Missing slot at {h:02d}:{mm:02d} – found {matches}"
@@ -413,7 +420,10 @@ class TestRegressionFactor12:
                     fc_rows.append({"start": ts, "mean": fc})
                     if pv >= 5.0:
                         pv_rows.append({"start": ts, "mean": pv})
-        raw = {f"2025-06-15T{h:02d}:00:00+00:00": 400.0 for h in range(6, 20)}
+        raw_em = {f"2025-06-15T{h:02d}:00:00+00:00": 400.0 for h in range(6, 20)}
+        # Add sentinel for last entry end boundary
+        raw_em["2025-06-15T20:00:00+00:00"] = 0.0
+        raw = normalise_em_to_5min(raw_em)
         return fc_rows, pv_rows, raw
 
     def test_today_total_not_factor_12(self) -> None:
@@ -473,11 +483,13 @@ class TestRegressionNightUnknown:
                 fc_rows.append({"start": ts, "mean": 400.0 * scale})
                 pv_rows.append({"start": ts, "mean": 200.0 * scale})
 
-        # Night slot in raw forecast
-        raw = {
-            "2025-06-15:02:00:00": 0.0,  # night, raw = 0
-            "2025-06-15:10:00:00": 400.0,  # daytime
+        # Night slot in raw forecast – normalise to 5-min slots first
+        raw_em = {
+            "2025-06-15T02:00:00+00:00": 0.0,  # night, raw = 0
+            "2025-06-15T10:00:00+00:00": 400.0,  # daytime
+            "2025-06-15T11:00:00+00:00": 0.0,
         }
+        raw = normalise_em_to_5min(raw_em)
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
         # Night sub-slots must be present and = 0.0 (not missing)
@@ -505,16 +517,20 @@ class TestRegressionNightUnknown:
                     fc_rows.append({"start": ts, "mean": 400.0 * scale})
                     pv_rows.append({"start": ts, "mean": 200.0 * scale})
 
-        raw = {
+        raw_em = {
             f"2025-06-15T{h:02d}:00:00+00:00": 0.0
             for h in list(range(0, 6)) + list(range(20, 24))
         }
-        raw.update({f"2025-06-15T{h:02d}:00:00+00:00": 400.0 for h in range(6, 20)})
+        raw_em.update({f"2025-06-15T{h:02d}:00:00+00:00": 400.0 for h in range(6, 20)})
+        raw_em["2025-06-16T00:00:00+00:00"] = 0.0  # sentinel
+        raw = normalise_em_to_5min(raw_em)
 
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
         for h in list(range(0, 6)) + list(range(20, 24)):
-            night_slots = [wh for ts, wh in combined.items() if f"T{h:02d}:" in ts]
+            night_slots = [
+                wh for ts, wh in combined.items() if f"2025-06-15T{h:02d}:" in ts
+            ]
             assert len(night_slots) == 12
             assert all(wh == 0.0 for wh in night_slots), (
                 f"Hour {h:02d} should be all zeros, got {night_slots}"
@@ -659,7 +675,8 @@ class TestHourlyFcBucketCoverage:
         """All 12 sub-slots of an hourly raw slot must carry a prediction."""
         fc_rows = self._hourly_fc_rows(hour=10, mean=400.0)
         pv_rows = self._pv_rows_5min(hour=10, mean=200.0)
-        raw = {"2025-06-01T10:00:00+00:00": 400.0}
+        raw_em = {"2025-06-01T10:00:00+00:00": 400.0, "2025-06-01T11:00:00+00:00": 0.0}
+        raw = normalise_em_to_5min(raw_em)
 
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
@@ -674,7 +691,8 @@ class TestHourlyFcBucketCoverage:
         """All sub-slots should carry the same value (uniform training data → same model)."""
         fc_rows = self._hourly_fc_rows(hour=10, mean=400.0)
         pv_rows = self._pv_rows_5min(hour=10, mean=200.0)
-        raw = {"2025-06-01T10:00:00+00:00": 400.0}
+        raw_em = {"2025-06-01T10:00:00+00:00": 400.0, "2025-06-01T11:00:00+00:00": 0.0}
+        raw = normalise_em_to_5min(raw_em)
 
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
@@ -688,7 +706,8 @@ class TestHourlyFcBucketCoverage:
         fc_rows = self._hourly_fc_rows(hour=10, mean=400.0)
         pv_rows = self._pv_rows_5min(hour=10, mean=200.0)
         raw_wh = 400.0
-        raw = {"2025-06-01T10:00:00+00:00": raw_wh}
+        raw_em = {"2025-06-01T10:00:00+00:00": raw_wh, "2025-06-01T11:00:00+00:00": 0.0}
+        raw = normalise_em_to_5min(raw_em)
 
         combined, _ = apply_corrections(raw, fc_rows, {"sensor.pv": pv_rows}, "factor")
 
@@ -769,8 +788,9 @@ def _tree_shade_rows(
             for mm in range(0, 60, BUCKET_MIN):
                 ts = base_date + day_offset + timedelta(hours=h, minutes=mm)
                 pv_mm = pv_h + (pv_next - pv_h) * mm / 60
-                fc_rows.append({"start": ts, "mean": fc_h * day_scale_fc})
-                pv_rows.append({"start": ts, "mean": pv_mm * day_scale_pv})
+                # fc_rows means are in Wh/slot (W * 5/60), matching to_wh_per_slot("W")
+                fc_rows.append({"start": ts, "mean": fc_h * day_scale_fc * (5 / 60)})
+                pv_rows.append({"start": ts, "mean": pv_mm * day_scale_pv * (5 / 60)})
 
     return fc_rows, pv_rows
 
@@ -790,11 +810,14 @@ class TestTreeShadingScenario:
     _CLEAR_HOURS = range(13, 20)  # pv/fc >> 0.20
 
     def _raw_forecast(self, date: str = "2025-06-15") -> dict[str, float]:
-        """One hourly slot per solar hour."""
-        raw = {}
+        """Hourly EM slots for each solar hour, normalised to 5-minute slots."""
+        em: dict[str, float] = {}
         for h, (fc_h, _) in _TREE_SHADE_TABLE.items():
-            raw[f"{date}T{h:02d}:00:00+00:00"] = float(fc_h)
-        return raw
+            em[f"{date}T{h:02d}:00:00+00:00"] = float(fc_h)
+        # Sentinel so the last entry has a defined end
+        last_h = max(_TREE_SHADE_TABLE) + 1
+        em[f"{date}T{last_h:02d}:00:00+00:00"] = 0.0
+        return normalise_em_to_5min(em)
 
     def _shaded_mean(self, per_string: dict[str, dict[str, float]], hour: int) -> float:
         """Mean predicted value across the 12 sub-slots of *hour*."""
@@ -857,7 +880,13 @@ class TestTreeShadingScenario:
         _, per_string = apply_corrections(
             raw, fc_rows, {"sensor.pv": pv_rows}, algorithm
         )
-        n = len(per_string.get("sensor.pv", {}))
+        # Filter to the 13 solar hours (7–19) only, excluding the sentinel slot
+        solar_slots = {
+            ts: v
+            for ts, v in per_string.get("sensor.pv", {}).items()
+            if any(f"T{h:02d}:" in ts for h in _TREE_SHADE_TABLE)
+        }
+        n = len(solar_slots)
         assert n == 13 * 12, f"algorithm={algorithm}: expected 156 sub-slots, got {n}"
 
     @pytest.mark.parametrize("algorithm", ["factor", "linear", "quadratic"])
@@ -884,14 +913,17 @@ class TestTreeShadingScenario:
         )
         slots = per_string.get("sensor.pv", {})
 
-        # Sum predictions and raw fc over shaded hours
+        # Sum predictions and raw fc over shaded hours.
+        # Both pred_total and fc_total are in Wh/slot (raw was normalised).
         pred_total = sum(
             v
             for ts, v in slots.items()
             if any(f"T{h:02d}:" in ts for h in self._SHADED_HOURS)
         )
         fc_total = sum(
-            fc for h, (fc, _) in _TREE_SHADE_TABLE.items() if h in self._SHADED_HOURS
+            v
+            for ts, v in raw.items()
+            if any(f"T{h:02d}:" in ts for h in self._SHADED_HOURS)
         )
 
         ratio = pred_total / fc_total if fc_total else 0.0
@@ -899,3 +931,155 @@ class TestTreeShadingScenario:
             f"algorithm={algorithm}: morning pv/fc ratio {ratio:.3f} outside [0.10, 0.35] "
             f"(expected ~0.20 for tree-shaded morning)"
         )
+
+
+# ---------------------------------------------------------------------------
+# normalise_em_to_5min
+# ---------------------------------------------------------------------------
+
+
+from shadylib import normalise_em_to_5min  # noqa: E402
+
+
+class TestNormaliseEmTo5Min:
+    """Tests for normalise_em_to_5min()."""
+
+    # ------------------------------------------------------------------
+    # Edge cases
+    # ------------------------------------------------------------------
+
+    def test_empty_returns_empty(self) -> None:
+        assert normalise_em_to_5min({}) == {}
+
+    def test_invalid_timestamp_skipped(self) -> None:
+        result = normalise_em_to_5min({"not-a-date": 100.0})
+        assert result == {}
+
+    # ------------------------------------------------------------------
+    # Single entry – assigned to its own slot only
+    # ------------------------------------------------------------------
+
+    def test_single_entry_at_slot_boundary(self) -> None:
+        result = normalise_em_to_5min({"2025-06-01T10:00:00+00:00": 60.0})
+        assert list(result.keys()) == ["2025-06-01T10:00:00+00:00"]
+        assert result["2025-06-01T10:00:00+00:00"] == 60.0
+
+    def test_single_entry_non_boundary(self) -> None:
+        result = normalise_em_to_5min({"2025-06-01T10:17:00+00:00": 60.0})
+        assert list(result.keys()) == ["2025-06-01T10:15:00+00:00"]
+        assert result["2025-06-01T10:15:00+00:00"] == 60.0
+
+    # ------------------------------------------------------------------
+    # Hourly EM slots – one value per full hour
+    # ------------------------------------------------------------------
+
+    def test_hourly_slots_distributed_evenly(self) -> None:
+        """228 Wh for 06:00–07:00 → 12 slots à 19 Wh."""
+        raw = {
+            "2025-06-01T06:00:00+00:00": 228.0,
+            "2025-06-01T07:00:00+00:00": 480.0,
+        }
+        result = normalise_em_to_5min(raw)
+
+        # 06:xx slots: 228 / 12 = 19.0
+        for mm in range(0, 60, 5):
+            key = f"2025-06-01T06:{mm:02d}:00+00:00"
+            assert key in result, f"Missing slot {key}"
+            assert abs(result[key] - 19.0) < 0.01, f"Slot {key}: {result[key]}"
+
+        # 07:xx: only the single-entry slot
+        assert "2025-06-01T07:00:00+00:00" in result
+        assert result["2025-06-01T07:00:00+00:00"] == 480.0
+
+    def test_hourly_total_preserved(self) -> None:
+        """Sum of distributed slots equals original EM value."""
+        raw = {
+            "2025-06-01T08:00:00+00:00": 360.0,
+            "2025-06-01T09:00:00+00:00": 0.0,
+        }
+        result = normalise_em_to_5min(raw)
+        hour_sum = sum(v for ts, v in result.items() if "T08:" in ts)
+        assert abs(hour_sum - 360.0) < 0.05
+
+    # ------------------------------------------------------------------
+    # Sub-hourly EM slots – non-boundary timestamps
+    # ------------------------------------------------------------------
+
+    def test_non_boundary_start_partial_first_slot(self) -> None:
+        """EM value starting at :17 covers 3/5 of the :15 slot and 2/5 of :20."""
+        raw = {
+            "2025-06-01T10:17:00+00:00": 100.0,
+            "2025-06-01T10:22:00+00:00": 0.0,
+        }
+        # interval 10:17–10:22 = 5 min total
+        # overlap with :15 slot (10:15–10:20): 3 min → 60 Wh
+        # overlap with :20 slot (10:20–10:25): 2 min → 40 Wh
+        result = normalise_em_to_5min(raw)
+        assert abs(result.get("2025-06-01T10:15:00+00:00", 0.0) - 60.0) < 0.1
+        assert abs(result.get("2025-06-01T10:20:00+00:00", 0.0) - 40.0) < 0.1
+
+    def test_non_boundary_total_preserved(self) -> None:
+        raw = {
+            "2025-06-01T06:17:00+00:00": 300.0,
+            "2025-06-01T07:00:00+00:00": 0.0,
+        }
+        result = normalise_em_to_5min(raw)
+        total = sum(v for ts, v in result.items() if "T06:" in ts)
+        assert abs(total - 300.0) < 0.1
+
+    def test_half_hourly_slots(self) -> None:
+        """EM delivering 30-minute intervals distributes into 6 slots each."""
+        raw = {
+            "2025-06-01T06:00:00+00:00": 120.0,
+            "2025-06-01T06:30:00+00:00": 180.0,
+            "2025-06-01T07:00:00+00:00": 0.0,
+        }
+        result = normalise_em_to_5min(raw)
+        # First 30 min: 120/6 = 20 Wh per slot
+        for mm in range(0, 30, 5):
+            key = f"2025-06-01T06:{mm:02d}:00+00:00"
+            assert abs(result.get(key, 0.0) - 20.0) < 0.01, f"{key}: {result.get(key)}"
+        # Second 30 min: 180/6 = 30 Wh per slot
+        for mm in range(30, 60, 5):
+            key = f"2025-06-01T06:{mm:02d}:00+00:00"
+            assert abs(result.get(key, 0.0) - 30.0) < 0.01, f"{key}: {result.get(key)}"
+
+    # ------------------------------------------------------------------
+    # Ordering
+    # ------------------------------------------------------------------
+
+    def test_output_is_sorted(self) -> None:
+        raw = {
+            "2025-06-01T10:00:00+00:00": 60.0,
+            "2025-06-01T09:00:00+00:00": 60.0,
+            "2025-06-01T11:00:00+00:00": 0.0,
+        }
+        result = normalise_em_to_5min(raw)
+        keys = list(result.keys())
+        assert keys == sorted(keys)
+
+    # ------------------------------------------------------------------
+    # Prediction scale consistency
+    # ------------------------------------------------------------------
+
+    def test_predict_string_uses_slot_values_directly(self) -> None:
+        """After normalisation, _predict_string with a factor-1 model returns
+        the same Wh/slot values – no hidden /12 scaling."""
+        from shadylib.correction import _predict_string
+        from shadylib.models import BucketModels
+
+        # Factor model: output = 1.0 × input
+        models: BucketModels = {(6, mm): (1.0,) for mm in range(0, 60, 5)}
+
+        raw_em = {
+            "2025-06-01T06:00:00+00:00": 228.0,
+            "2025-06-01T07:00:00+00:00": 0.0,
+        }
+        normalised = normalise_em_to_5min(raw_em)
+        result = _predict_string(normalised, models)
+
+        # Each slot should be ~19 Wh (228/12), not 228 Wh
+        for mm in range(0, 60, 5):
+            key = f"2025-06-01T06:{mm:02d}:00+00:00"
+            assert key in result, f"Missing {key}"
+            assert abs(result[key] - 19.0) < 0.1, f"{key}: {result[key]}"

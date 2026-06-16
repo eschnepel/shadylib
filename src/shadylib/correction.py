@@ -1,19 +1,14 @@
 """correction.py – Applies bucket models to a raw forecast. No HA dependencies.
 
 The apply_corrections() function takes a raw forecast dict and a set of
-pre-fetched recorder statistics, builds per-string hourly models, and
+pre-fetched recorder statistics, builds per-string per-bucket models, and
 returns both the combined corrected forecast and per-string forecasts.
 
-Hourly provider semantics:
-    A raw slot with minute=0 is assumed to be a Wh sum for the full hour.
-    It is expanded into 12 individual 5-minute sub-slots, each predicted
-    by its own bucket model.  raw_wh is passed unchanged into every bucket
-    model because the recorder 5-min mean (W) has the same magnitude as
-    the hourly Wh/h value at constant power.
-
-Sub-hourly provider semantics:
-    Slots with minute≠0 are matched to their exact bucket (or nearest
-    within the same hour if no exact match exists).
+The raw forecast from the Energy Manager uses arbitrary-interval timestamps.
+Before prediction, the caller must normalise it to 5-minute Wh/slot values
+using normalise_em_to_5min() so that prediction inputs match the scale on
+which bucket models were trained (5-minute recorder means converted to
+Wh/slot by to_wh_per_slot()).
 """
 
 from __future__ import annotations
@@ -21,7 +16,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from .math_utils import r, snap, BUCKET_MIN
+from .math_utils import r, snap
 from .models import (
     build_bucket_models,
     predict,
@@ -42,8 +37,10 @@ def apply_corrections(
     """Correct a raw forecast using per-string per-bucket models.
 
     Arguments:
-        raw:              {ISO-ts: Wh} – raw aggregated forecast
+        raw:              {ISO-ts: Wh/slot} – EM forecast pre-normalised to
+                          5-minute slots by normalise_em_to_5min().
         fc_rows:          [{"start": datetime, "mean": float}] – forecast ref
+                          (5-min recorder means, already in Wh/slot)
         pv_sensors_rows:  {entity_id: [{"start": datetime, "mean": float}]}
         algorithm:        "factor" | "linear" | "quadratic"
 
@@ -95,7 +92,13 @@ def _predict_string(
     raw: dict[str, float],
     models: BucketModels,
 ) -> dict[str, float]:
-    """Apply bucket models to a single string for all raw slots."""
+    """Apply bucket models to a single string for all 5-minute raw slots.
+
+    raw must already be normalised to 5-minute Wh/slot values (via
+    normalise_em_to_5min()) so each entry maps directly to one bucket.
+    The model input and output are both in Wh/slot – no further scaling
+    or sub-slot expansion is needed.
+    """
     result: dict[str, float] = {}
 
     for iso_ts, raw_wh in raw.items():
@@ -104,28 +107,8 @@ def _predict_string(
         except ValueError:
             continue
 
-        if dt.minute == 0:
-            # Hourly slot → expand into 12 five-minute sub-slots.
-            # The bucket models are trained on 5-min means (W), and raw_wh is
-            # Wh for the full hour (≈ W at constant power).  predict() therefore
-            # returns a W-equivalent value; to get Wh for a 5-min slot we
-            # divide by 12 (= 60 min / 5 min).
-            #
-            # When the fc sensor supplies only hourly statistics, training data
-            # only produces bucket models at minute=0 for each hour.  Using an
-            # exact model.get(bk) lookup would return None for mm=5…55, making
-            # 11 of 12 sub-slots zero.  _nearest_model falls back to the closest
-            # bucket within the same hour, so all sub-slots receive a prediction.
-            for mm in range(0, 60, BUCKET_MIN):
-                sub_ts = dt.replace(minute=mm, second=0, microsecond=0).isoformat()
-                model = _nearest_model(models, dt.hour, mm)
-                val = r(max(0.0, predict(model, raw_wh)) / 12) if model else 0.0
-                result[sub_ts] = r(result.get(sub_ts, 0.0) + val)
-        else:
-            # Sub-hourly slot → exact or nearest bucket within same hour
-            model = _nearest_model(models, dt.hour, snap(dt.minute))
-            val = r(max(0.0, predict(model, raw_wh)) / 12) if model else 0.0
-            result[iso_ts] = val
+        model = _nearest_model(models, dt.hour, snap(dt.minute))
+        result[iso_ts] = r(max(0.0, predict(model, raw_wh))) if model else 0.0
 
     return result
 
