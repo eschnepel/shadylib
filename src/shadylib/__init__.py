@@ -31,6 +31,8 @@ from .math_utils import (
     wls2_origin_quad,
     BUCKET_MIN,
     PRECISION,
+    enforce_monotonic,
+    filter_gap_successors,
 )
 from .models import (
     BucketKey,
@@ -57,6 +59,8 @@ __all__ = [
     "wls2_origin_quad",
     "BUCKET_MIN",
     "PRECISION",
+    "enforce_monotonic",
+    "filter_gap_successors",
     # models
     "BucketKey",
     "BucketValue",
