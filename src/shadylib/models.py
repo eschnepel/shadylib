@@ -19,7 +19,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
-from .math_utils import r, r6, snap, wls2, wls2_origin_quad
+from .math_utils import (
+    r,
+    r6,
+    snap,
+    wls2,
+    wls2_origin_quad,
+)
 
 _UTC = timezone.utc
 

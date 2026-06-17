@@ -7,11 +7,13 @@ Contains:
   - Hourly aggregation (aggregate_to_hours)
   - EM forecast normalisation (normalise_em_to_5min)
   - WLS solvers (wls2, wls2_origin_quad)
+  - Recorder data quality filters (enforce_monotonic, filter_gap_successors)
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 PRECISION = 2  # decimal places for all Wh output values
 BUCKET_MIN = 5  # minutes per bucket
@@ -282,3 +284,89 @@ def wls2_origin_quad(
     a = (swx2y * swx2 - swxy * swx3) / det
     b = (swxy * swx4 - swx2y * swx3) / det
     return a, b
+
+
+# ---------------------------------------------------------------------------
+# Recorder data quality filters
+# ---------------------------------------------------------------------------
+
+
+def enforce_monotonic(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Discard rows that violate strictly non-decreasing mean values (f(n) ≤ f(n+1)).
+
+    The HA recorder accumulates energy as a running total.  After a backup
+    restore the counter may reset to a lower value, producing rows where
+    ``mean[n] > mean[n+1]``.  Any such row – and every subsequent row until
+    the series becomes monotonic again – is discarded.
+
+    The check operates on the **raw** (not gap-filtered) series so that it
+    can be applied before :func:`filter_gap_successors`.
+
+    Args:
+        rows: Sorted list of ``{"start": datetime, "mean": float}`` dicts.
+              The list is not required to be sorted by this function, but
+              the monotonicity check is only meaningful when it is.
+
+    Returns:
+        A new list containing only the rows that preserve f(n) ≤ f(n+1).
+        The input list is not mutated.  Rows are returned in the original
+        order.  An empty input or a single-row input is returned unchanged.
+    """
+    if len(rows) < 2:
+        return list(rows)
+
+    result: list[dict[str, Any]] = [rows[0]]
+    last_valid_mean: float = float(rows[0]["mean"])
+
+    for row in rows[1:]:
+        mean: float = float(row["mean"])
+        if mean >= last_valid_mean:
+            result.append(row)
+            last_valid_mean = mean
+        # else: discard – counter reset detected
+
+    return result
+
+
+def filter_gap_successors(
+    rows: list[dict[str, Any]],
+    slot_minutes: int = 5,
+) -> list[dict[str, Any]]:
+    """Remove the direct successor of any gap larger than one slot interval.
+
+    A gap is detected when the difference between two consecutive ``start``
+    timestamps exceeds ``slot_minutes``.  The sample immediately following
+    the gap is dropped because the HA recorder may have accumulated all
+    missing values into it, producing an artificially inflated reading.
+
+    Args:
+        rows:         Sorted list of ``{"start": datetime, "mean": float}``
+                      dicts.  Rows must be sorted by ``start`` in ascending
+                      order.
+        slot_minutes: Expected interval between samples (default 5).
+
+    Returns:
+        A new list with gap-successor rows removed.  The input list is not
+        mutated.  An empty input or a single-row input is returned unchanged.
+    """
+    if len(rows) < 2:
+        return list(rows)
+
+    threshold = timedelta(minutes=slot_minutes)
+    result: list[dict[str, Any]] = [rows[0]]
+
+    for prev, curr in zip(rows, rows[1:]):
+        prev_start = prev["start"]
+        curr_start = curr["start"]
+        if not isinstance(prev_start, datetime):
+            prev_start = datetime.fromisoformat(str(prev_start))
+        if not isinstance(curr_start, datetime):
+            curr_start = datetime.fromisoformat(str(curr_start))
+        gap = curr_start - prev_start
+        if gap > threshold:
+            continue  # discard gap successor
+        result.append(curr)
+
+    return result
