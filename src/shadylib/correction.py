@@ -33,7 +33,7 @@ def apply_corrections(
     fc_rows: InputHistory,
     pv_sensors_rows: dict[str, InputHistory],
     algorithm: str,
-) -> tuple[dict[str, float], dict[str, dict[str, float]]]:
+) -> tuple[dict[str, float], dict[str, dict[str, float]], dict[str, BucketModels]]:
     """Correct a raw forecast using per-string per-bucket models.
 
     Arguments:
@@ -45,15 +45,17 @@ def apply_corrections(
         algorithm:        "factor" | "linear" | "quadratic"
 
     Returns:
-        (combined, string_forecasts)
+        (combined, string_forecasts, string_bucket_models)
 
-        combined:          {ISO-ts: Wh} – sum of all string predictions
-        string_forecasts:  {entity_id: {ISO-ts: Wh}} – per-string predictions
+        combined:             {ISO-ts: Wh} – sum of all string predictions
+        string_forecasts:     {entity_id: {ISO-ts: Wh}} – per-string predictions
+        string_bucket_models: {entity_id: BucketModels} – fitted models per string
 
-    If all string models fail, returns (dict(raw), {}).
+    If all string models fail, returns (dict(raw), {}, {}).
     """
     combined: dict[str, float] = {}
     string_forecasts: dict[str, dict[str, float]] = {}
+    string_bucket_models: dict[str, BucketModels] = {}
 
     for pv_sensor, pv_rows in pv_sensors_rows.items():
         models = build_bucket_models(fc_rows, pv_rows, algorithm)
@@ -75,6 +77,7 @@ def apply_corrections(
             len(models),
         )
 
+        string_bucket_models[pv_sensor] = models
         string_slots = _predict_string(raw, models)
         string_forecasts[pv_sensor] = string_slots
 
@@ -83,9 +86,9 @@ def apply_corrections(
 
     if not combined:
         _LOGGER.debug("All string models failed – falling back to raw forecast")
-        return dict(raw), {}
+        return dict(raw), {}, {}
 
-    return dict(sorted(combined.items())), string_forecasts
+    return dict(sorted(combined.items())), string_forecasts, string_bucket_models
 
 
 def _predict_string(
