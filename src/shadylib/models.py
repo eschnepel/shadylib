@@ -29,7 +29,7 @@ from .math_utils import (
 
 _UTC = timezone.utc
 
-_LOGGER = logging.getLogger(__name__)
+_unused_logger = logging.getLogger(__name__)
 
 # Neighbour smoothing weights
 _W_SELF = 1.0  # the observation itself
