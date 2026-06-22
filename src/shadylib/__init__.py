@@ -15,7 +15,7 @@ Public API:
         # Correction pipeline
         apply_corrections,
         # Effective power loss distribution
-        compute_effective_strings, split_combined_sensor,
+        compute_effective_strings,
     )
 """
 
@@ -44,7 +44,7 @@ from .models import (
     PV_MIN_W,
 )
 from .correction import apply_corrections
-from .effective import compute_effective_strings, split_combined_sensor
+from .effective import compute_effective_strings
 
 __all__ = [
     # math_utils
@@ -73,5 +73,4 @@ __all__ = [
     "apply_corrections",
     # effective
     "compute_effective_strings",
-    "split_combined_sensor",
 ]
