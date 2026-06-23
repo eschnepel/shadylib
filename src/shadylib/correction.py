@@ -62,7 +62,10 @@ def apply_corrections(
 
         if not models:
             _LOGGER.warning(
-                "No bucket models for %s (algorithm=%s, fc_rows=%d, pv_rows=%d)",
+                "No bucket models for %s"
+                " (algorithm=%s, fc_rows=%d, pv_rows=%d)."
+                " Enable DEBUG logging for shadylib.models to see root cause"
+                " (timestamp mismatch, curtailment filter, or degenerate fit).",
                 pv_sensor,
                 algorithm,
                 len(fc_rows),
