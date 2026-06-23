@@ -15,7 +15,7 @@ Public API:
         # Correction pipeline
         apply_corrections,
         # Effective power loss distribution
-        compute_effective_strings,
+        compute_effective_slot,
     )
 """
 
@@ -44,7 +44,7 @@ from .models import (
     PV_MIN_W,
 )
 from .correction import apply_corrections
-from .effective import compute_effective_strings
+from .effective import compute_effective_slot
 
 __all__ = [
     # math_utils
@@ -72,5 +72,5 @@ __all__ = [
     # correction
     "apply_corrections",
     # effective
-    "compute_effective_strings",
+    "compute_effective_slot",
 ]
