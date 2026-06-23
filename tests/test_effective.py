@@ -1,9 +1,9 @@
-"""Tests for shadylib.effective – compute_effective_strings."""
+"""Tests for shadylib.effective – compute_effective_slot."""
 
 from __future__ import annotations
 
 
-from shadylib import compute_effective_strings
+from shadylib import compute_effective_slot
 
 
 # ---------------------------------------------------------------------------
@@ -13,55 +13,47 @@ from shadylib import compute_effective_strings
 
 class TestComputeEffectiveStringsEdgeCases:
     def test_empty_input_returns_empty(self):
-        assert compute_effective_strings([]) == []
+        assert compute_effective_slot([], net_export_wh=0.0) == []
 
     def test_no_loss_when_export_exceeds_pv(self):
         """net_export ≥ pv_sum → total_loss ≤ 0 → originals returned."""
-        result = compute_effective_strings([100.0, 200.0], net_export=500.0)
+        result = compute_effective_slot([100.0, 200.0], net_export_wh=500.0)
         assert result == [100.0, 200.0]
 
     def test_zero_pv_strings_remain_zero(self):
-        result = compute_effective_strings([0.0, 100.0, 0.0], net_export=50.0)
+        result = compute_effective_slot([0.0, 100.0, 0.0], net_export_wh=50.0)
         assert result[0] == 0.0
         assert result[2] == 0.0
 
     def test_total_loss_greater_than_sum_all_zero(self):
         """total_loss ≥ pv_sum → all strings → 0."""
-        result = compute_effective_strings([100.0, 200.0], net_import=500.0)
+        result = compute_effective_slot([100.0, 200.0], net_export_wh=0.0, net_import_wh=500.0)
         assert result == [0.0, 0.0]
 
     def test_negative_pv_treated_as_inactive(self):
-        result = compute_effective_strings([-10.0, 200.0])
+        result = compute_effective_slot([-10.0, 200.0], net_export_wh=0.0)
         assert result[0] == 0.0
 
     def test_all_zero_pv_returns_all_zero(self):
-        result = compute_effective_strings([0.0, 0.0, 0.0], net_export=100.0)
+        result = compute_effective_slot([0.0, 0.0, 0.0], net_export_wh=100.0)
         assert result == [0.0, 0.0, 0.0]
 
     def test_result_same_length_as_input(self):
         pv = [100.0, 200.0, 300.0]
-        result = compute_effective_strings(pv, net_import=50.0)
+        result = compute_effective_slot(pv, net_export_wh=0.0, net_import_wh=50.0)
         assert len(result) == len(pv)
-
-    def test_no_system_sensors_full_loss(self):
-        """Without any system sensors: total_loss = pv_sum + 0 - 0 = pv_sum → all zero.
-
-        PV strings are the inputs; without any export configured, everything is lost.
-        """
-        result = compute_effective_strings([100.0, 200.0])
-        assert result == [0.0, 0.0]
 
     def test_perfect_balance_returns_originals(self):
         """When net_export exactly equals pv_sum, loss = 0."""
         pv = [100.0, 200.0]
-        result = compute_effective_strings(pv, net_export=300.0)
+        result = compute_effective_slot(pv, net_export_wh=300.0)
         assert result == [100.0, 200.0]
 
     def test_all_values_non_negative(self):
-        result = compute_effective_strings(
+        result = compute_effective_slot(
             [50.0, 100.0, 150.0],
-            net_import=80.0,
-            net_export=20.0,
+            net_import_wh=80.0,
+            net_export_wh=20.0,
         )
         assert all(v >= 0.0 for v in result)
 
@@ -77,7 +69,7 @@ class TestWaterfallAlgorithm:
 
         total_loss = 200+200 + 0 - 300 = 100
         """
-        result = compute_effective_strings([200.0, 200.0], net_export=300.0)
+        result = compute_effective_slot([200.0, 200.0], net_export_wh=300.0)
         assert abs(result[0] - 150.0) < 1e-6
         assert abs(result[1] - 150.0) < 1e-6
 
@@ -88,7 +80,7 @@ class TestWaterfallAlgorithm:
         Fair share = 75.  String 50 < 75 → 0, absorbed=50, rem=100.
         String 200 - 100 = 100 effective.
         """
-        result = compute_effective_strings([50.0, 200.0], net_export=100.0)
+        result = compute_effective_slot([50.0, 200.0], net_export_wh=100.0)
         assert result[0] == 0.0
         assert abs(result[1] - 100.0) < 1e-6
 
@@ -96,8 +88,8 @@ class TestWaterfallAlgorithm:
         """Reversing input order yields same effective values (reordered)."""
         pv = [50.0, 100.0, 200.0]
         pv_rev = list(reversed(pv))
-        r1 = compute_effective_strings(pv, net_export=150.0)
-        r2 = compute_effective_strings(pv_rev, net_export=150.0)
+        r1 = compute_effective_slot(pv, net_export_wh=150.0)
+        r2 = compute_effective_slot(pv_rev, net_export_wh=150.0)
         assert sorted(r1) == sorted(r2)
 
     def test_sum_of_effective_plus_loss_equals_pv_sum(self):
@@ -105,8 +97,8 @@ class TestWaterfallAlgorithm:
         pv = [80.0, 120.0, 300.0]
         net_import = 50.0
         net_export = 200.0
-        result = compute_effective_strings(
-            pv, net_import=net_import, net_export=net_export
+        result = compute_effective_slot(
+            pv, net_import_wh=net_import, net_export_wh=net_export
         )
         expected_loss = max(0.0, min(sum(pv) + net_import - net_export, sum(pv)))
         assert abs(sum(result) - (sum(pv) - expected_loss)) < 1e-6
@@ -119,20 +111,20 @@ class TestWaterfallAlgorithm:
         Round 2: fair_share = 210/2 = 105.  String 100 → 0, absorbed=100, rem=110.
         Round 3: fair_share = 110/1.        String 300 - 110 = 190.
         """
-        result = compute_effective_strings([10.0, 100.0, 300.0], net_export=190.0)
+        result = compute_effective_slot([10.0, 100.0, 300.0], net_export_wh=190.0)
         assert result[0] == 0.0
         assert result[1] == 0.0
         assert abs(result[2] - 190.0) < 1e-6
 
     def test_import_and_export_combined(self):
-        """net_import=50, net_export=300 over pv=[200,200].
+        """net_import_wh=50, net_export_wh=300 over pv=[200,200].
 
         total_loss = 400 + 50 - 300 = 150 → each string loses 75 → effective = 125
         """
-        result = compute_effective_strings(
+        result = compute_effective_slot(
             [200.0, 200.0],
-            net_import=50.0,
-            net_export=300.0,
+            net_import_wh=50.0,
+            net_export_wh=300.0,
         )
         assert abs(result[0] - 125.0) < 1e-6
         assert abs(result[1] - 125.0) < 1e-6
@@ -142,9 +134,9 @@ class TestWaterfallAlgorithm:
 
         total_loss = 300 + 0 - 200 = 100 → even split over 2 active strings (50 each)
         """
-        result = compute_effective_strings(
+        result = compute_effective_slot(
             [0.0, 100.0, 0.0, 200.0],
-            net_export=200.0,
+            net_export_wh=200.0,
         )
         assert result[0] == 0.0
         assert result[2] == 0.0

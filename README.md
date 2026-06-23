@@ -15,7 +15,7 @@ pip install shadylib
 | `math_utils` | `r`, `r6`, `snap`, `parse_dt`, `aggregate_to_hours`, `normalise_em_to_5min`, `normalise_to_5min_day`, `wls2`, `wls2_origin_quad`, `BUCKET_MIN`, `PRECISION` |
 | `models` | `build_bucket_models`, `predict`, `BucketKey`, `BucketValue`, `BucketModels`, `InputHistory`, `PV_MIN_W` |
 | `correction` | `apply_corrections` |
-| `effective` | `compute_effective_strings`, `split_combined_sensor` |
+| `effective` | `compute_effective_slot` |
 
 ## Public API
 
@@ -32,7 +32,7 @@ from shadylib import (
     # Correction pipeline
     apply_corrections,
     # Effective power loss distribution
-    compute_effective_strings, split_combined_sensor,
+    compute_effective_slot,
 )
 ```
 
@@ -95,20 +95,21 @@ to ensure the last real forecast slot is fully expanded.
 
 ## Effective String Computation
 
-`compute_effective_strings` distributes system-level losses (grid import/export,
-battery import/export) across PV strings using a waterfall cascade. This allows
-the correction models to be trained on loss-corrected data rather than raw
-inverter output.
+`compute_effective_slot` distributes system-level losses (grid import/export,
+battery import/export) across PV strings for a single 5-minute slot using a
+waterfall cascade. All inputs must be in **Wh/slot**; unit conversion is the
+caller's responsibility. This allows forecast models to be trained on
+loss-corrected data rather than raw inverter output.
 
 ```python
-from shadylib import compute_effective_strings, split_combined_sensor
+from shadylib import compute_effective_slot
 
-effective = compute_effective_strings(
-    pv_values={"sensor.string_1": 800.0, "sensor.string_2": 600.0},
-    grid_import=0.0,
-    grid_export=150.0,
-    battery_import=200.0,
-    battery_export=0.0,
+# All values in Wh/slot
+effective = compute_effective_slot(
+    pv_wh=[38.5, 28.7, 8.0, 0.0],      # PV string readings in Wh/slot
+    net_import_wh=0.0,        # sum of import sensors in Wh/slot
+    net_export_wh=45.8,       # sum of export sensors in Wh/slot
 )
-# effective: dict[str, float] – loss-adjusted power per string
+# effective: list[float] – loss-adjusted Wh/slot per string, same index order
+effective == [27.8, 18.0, 0.0, 0.0]
 ```
