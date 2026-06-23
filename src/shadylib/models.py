@@ -29,7 +29,7 @@ from .math_utils import (
 
 _UTC = timezone.utc
 
-_unused_logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 # Neighbour smoothing weights
 _W_SELF = 1.0  # the observation itself
@@ -39,7 +39,7 @@ _W_FAR = 0.3  # ±10 min neighbour
 # Minimum PV value (W) included in training data.
 # Readings below this threshold indicate curtailment (e.g. battery full)
 # and are excluded to avoid pulling bucket models toward zero incorrectly.
-PV_MIN_W = 5.0
+PV_MIN_W = 1.0
 
 # Algorithm name constants
 ALGORITHM_FACTOR = "factor"
@@ -127,6 +127,9 @@ def build_bucket_models(
     fc_map: dict[datetime, float] = {
         asDateTime(r["start"]): cast(float, r["mean"]) for r in fc_rows
     }
+
+    pv_rows_total = len(pv_rows)
+    pv_rows_below_threshold = sum(1 for r in pv_rows if r["mean"] < PV_MIN_W)
     pv_map: dict[datetime, float] = {
         asDateTime(r["start"]): cast(float, r["mean"])
         for r in pv_rows
@@ -135,6 +138,18 @@ def build_bucket_models(
 
     common = sorted(set(fc_map) & set(pv_map))
     if not common:
+        _LOGGER.debug(
+            "build_bucket_models: no common timestamps"
+            " (fc_map=%d keys, pv_map=%d keys after filter,"
+            " pv_rows_below_threshold=%d/%d)."
+            " fc sample=%s … pv sample=%s",
+            len(fc_map),
+            len(pv_map),
+            pv_rows_below_threshold,
+            pv_rows_total,
+            [str(k) for k in sorted(fc_map)[:3]],
+            [str(k) for k in sorted(pv_map)[:3]],
+        )
         return {}
 
     # {BucketKey: [(fc_val, pv_val, weight), ...]}
@@ -157,7 +172,10 @@ def build_bucket_models(
                     (fc_map.get(nb, 0.0), pv_map.get(nb, 0.0), weight)
                 )
 
+    buckets_too_few_obs = {bk: len(obs) for bk, obs in buckets.items() if len(obs) < 2}
+
     models: BucketModels = {}
+    fit_failures: list[BucketKey] = []
     for bk, obs in buckets.items():
         if len(obs) < 2:
             continue
@@ -174,6 +192,39 @@ def build_bucket_models(
 
         if model is not None:
             models[bk] = model
+        else:
+            fit_failures.append(bk)
+
+    if not models:
+        _LOGGER.debug(
+            "build_bucket_models: 0 models produced"
+            " (algorithm=%s, common=%d, buckets=%d,"
+            " buckets_skipped_too_few_obs=%d, fit_failures=%d)."
+            " pv_rows_below_threshold=%d/%d."
+            " buckets_too_few_obs=%s fit_failure_keys=%s",
+            algorithm,
+            len(common),
+            len(buckets),
+            len(buckets_too_few_obs),
+            len(fit_failures),
+            pv_rows_below_threshold,
+            pv_rows_total,
+            sorted(buckets_too_few_obs.items())[:10],
+            sorted(fit_failures)[:10],
+        )
+    else:
+        _LOGGER.debug(
+            "build_bucket_models: %d models produced"
+            " (algorithm=%s, common=%d, buckets=%d,"
+            " pv_rows_below_threshold=%d/%d, fit_failures=%d)",
+            len(models),
+            algorithm,
+            len(common),
+            len(buckets),
+            pv_rows_below_threshold,
+            pv_rows_total,
+            len(fit_failures),
+        )
 
     return models
 
